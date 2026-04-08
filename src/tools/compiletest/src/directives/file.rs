@@ -3,16 +3,16 @@ use camino::Utf8Path;
 use crate::directives::LineNumber;
 use crate::directives::line::{DirectiveLine, line_directive};
 
-pub(crate) struct FileDirectives<'a> {
-    pub(crate) path: &'a Utf8Path,
-    pub(crate) lines: Vec<DirectiveLine<'a>>,
+pub struct FileDirectives<'a> {
+    pub path: &'a Utf8Path,
+    pub lines: Vec<DirectiveLine<'a>>,
 
     /// Whether the test source file contains an explicit `#![no_std]`/`#![no_core]` attribute.
-    pub(crate) has_explicit_no_std_core_attribute: bool,
+    pub has_explicit_no_std_core_attribute: bool,
 }
 
 impl<'a> FileDirectives<'a> {
-    pub(crate) fn from_file_contents(path: &'a Utf8Path, file_contents: &'a str) -> Self {
+    pub fn from_file_contents(path: &'a Utf8Path, file_contents: &'a str) -> Self {
         let mut lines = vec![];
         let mut has_explicit_no_std_core_attribute = false;
 
