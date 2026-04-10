@@ -904,6 +904,59 @@ NOTE: if you're sure you want to do this, please open an issue as to why. In the
     }
 }
 
+/// Runs the coverage-tool to collect LLVM compiler coverage across UI tests.
+/// Invoked via `./x.py run src/tools/coverage-tool`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CompilerCoverage {
+    pub compiler: Compiler,
+    pub target: TargetSelection,
+}
+
+impl Step for CompilerCoverage {
+    type Output = ();
+    const IS_HOST: bool = true;
+
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
+        run.path("src/tools/coverage-tool")
+    }
+
+    fn make_run(run: RunConfig<'_>) {
+        let compiler = run.builder.compiler(run.builder.top_stage, run.build_triple());
+        run.builder.ensure(CompilerCoverage { compiler, target: run.target });
+    }
+
+    fn run(self, builder: &Builder<'_>) {
+        let compiler = self.compiler;
+        let target = self.target;
+
+        // Build the coverage-tool binary.
+        let coverage_tool = builder.ensure(tool::CoverageTool { compiler, target });
+
+        // Point at the stage1 compiler so the tool can find rustc and sysroot.
+        let rustc = builder.rustc(compiler);
+        let sysroot = builder.sysroot(compiler);
+
+        let out_dir = builder.out.join("coverage");
+        t!(fs::create_dir_all(&out_dir));
+
+        let mut cmd = builder.tool_cmd(Tool::CoverageTool);
+        cmd.arg("--out").arg(&out_dir);
+        cmd.arg("--rustc-path").arg(&rustc);
+        cmd.arg("--sysroot-base").arg(&sysroot);
+
+        // Set coverage instrumentation flags so the stage1 compiler emits profraws.
+        cmd.env(
+            "RUSTFLAGS_BOOTSTRAP",
+            "-Cinstrument-coverage -Ccodegen-units=1",
+        );
+
+        builder.info(&format!("Collecting compiler coverage into {}", out_dir.display()));
+        cmd.run(builder);
+
+        let _ = coverage_tool;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Clippy {
     compilers: RustcPrivateCompilers,
