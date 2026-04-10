@@ -2,7 +2,11 @@
 // instrumented stage1 rustc and merging the resulting profraw files eagerly.
 //
 // Usage:
-//   coverage-tool --config <compiletest-args> [--suite tests/ui/generics] [--out coverage/]
+//   coverage-tool --out coverage/ [compiletest args...]
+//
+// All flags except --out are forwarded to compiletest's config parser,
+// so this tool is intended to be invoked by bootstrap the same way
+// compiletest is, with --out added.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -10,24 +14,26 @@ use std::sync::Arc;
 use std::{env, fs};
 
 use compiletest::{collect_and_make_tests, parse_config};
-use compiletest::common::Config;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
 
-    // Minimal CLI: --suite <dir> --out <dir>
-    // Everything else is passed through to compiletest's config parser.
-    let suite = arg_value(&args, "--suite")
-        .unwrap_or_else(|| "tests/ui".to_string());
+    // Extract tool-specific flags; everything else goes to parse_config.
     let out_dir = arg_value(&args, "--out")
         .unwrap_or_else(|| "coverage".to_string());
 
+    // Read rustc-path and sysroot-base from args so we can invoke rustc
+    // directly without touching private Config fields.
+    let rustc_path = arg_value(&args, "--rustc-path")
+        .unwrap_or_else(find_stage1_rustc);
+    let sysroot = arg_value(&args, "--sysroot-base")
+        .unwrap_or_else(find_stage1_sysroot);
+
     fs::create_dir_all(&out_dir).expect("failed to create output dir");
 
-    // Build a minimal compiletest Config pointing at the test suite.
-    // In practice this would be constructed from bootstrap's config,
-    // but for now we parse the same flags compiletest accepts.
-    let config = build_config(&suite);
+    // Strip --out <val> from args and pass the rest to parse_config.
+    let config_args = strip_flag(args, "--out");
+    let config = parse_config(config_args);
     let config = Arc::new(config);
 
     // Use compiletest to collect the full test list with all directives resolved.
@@ -53,17 +59,15 @@ fn main() {
 
         // Compile the test with LLVM_PROFILE_FILE set so the instrumented
         // rustc emits a profraw file.
-        let _result = Command::new(config.rustc_path.as_str())
+        let _result = Command::new(&rustc_path)
             .arg("--sysroot")
-            .arg(config.sysroot_base.as_str())
+            .arg(&sysroot)
             .arg(test_file)
-            .arg("--edition")
-            .arg(test.revision.as_deref().unwrap_or("2015"))
-            .args(&["-o", "/dev/null", "--crate-type", "bin"])
+            .args(&["-o", "/dev/null"])
             .env("LLVM_PROFILE_FILE", &profile_file)
             .output();
 
-        // Collect any profraw files written
+        // Collect any profraw files written.
         let profraws: Vec<PathBuf> = fs::read_dir(&tmpdir)
             .unwrap()
             .filter_map(|e| e.ok())
@@ -77,7 +81,7 @@ fn main() {
             continue;
         }
 
-        // Eager merge into running profdata, then delete profraws
+        // Eager merge into running profdata, then delete profraws.
         merge_profraws(&profraws, &profdata_path);
         for f in &profraws {
             let _ = fs::remove_file(f);
@@ -105,13 +109,30 @@ fn merge_profraws(profraws: &[PathBuf], profdata: &PathBuf) {
 }
 
 fn find_llvm_profdata() -> String {
-    // Look in the same place bootstrap puts it
     glob::glob("build/*/ci-llvm/bin/llvm-profdata")
         .unwrap()
         .filter_map(|p| p.ok())
         .next()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "llvm-profdata".to_string())
+}
+
+fn find_stage1_rustc() -> String {
+    glob::glob("build/*/stage1/bin/rustc")
+        .unwrap()
+        .filter_map(|p| p.ok())
+        .next()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "rustc".to_string())
+}
+
+fn find_stage1_sysroot() -> String {
+    glob::glob("build/*/stage1")
+        .unwrap()
+        .filter_map(|p| p.ok())
+        .next()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "build/host/stage1".to_string())
 }
 
 fn tempdir() -> PathBuf {
@@ -126,22 +147,20 @@ fn arg_value(args: &[String], flag: &str) -> Option<String> {
         .map(|w| w[1].clone())
 }
 
-fn build_config(suite: &str) -> Config {
-    // Construct a minimal Config from environment/args.
-    // This is a stub — in practice bootstrap would pass the full config.
-    parse_config(vec![
-        "coverage-tool".to_string(),
-        "--mode".to_string(), "ui".to_string(),
-        "--suite-path".to_string(), suite.to_string(),
-        "--rustc-path".to_string(), find_stage1_rustc(),
-    ])
-}
-
-fn find_stage1_rustc() -> String {
-    glob::glob("build/*/stage1/bin/rustc")
-        .unwrap()
-        .filter_map(|p| p.ok())
-        .next()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "rustc".to_string())
+/// Remove --flag <value> from an args list and return the rest.
+fn strip_flag(args: Vec<String>, flag: &str) -> Vec<String> {
+    let mut out = Vec::with_capacity(args.len());
+    let mut skip = false;
+    for arg in args {
+        if skip {
+            skip = false;
+            continue;
+        }
+        if arg == flag {
+            skip = true;
+            continue;
+        }
+        out.push(arg);
+    }
+    out
 }
