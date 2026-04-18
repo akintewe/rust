@@ -904,8 +904,8 @@ NOTE: if you're sure you want to do this, please open an issue as to why. In the
     }
 }
 
-/// Runs the coverage-tool to collect LLVM compiler coverage across UI tests.
-/// Invoked via `./x.py run src/tools/coverage-tool`.
+/// Runs the compiler-coverage-tool to collect LLVM compiler coverage across UI tests.
+/// Invoked via `./x.py run src/tools/compiler-coverage-tool`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CompilerCoverage {
     pub compiler: Compiler,
@@ -917,7 +917,7 @@ impl Step for CompilerCoverage {
     const IS_HOST: bool = true;
 
     fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
-        run.path("src/tools/coverage-tool")
+        run.path("src/tools/compiler-coverage-tool")
     }
 
     fn make_run(run: RunConfig<'_>) {
@@ -929,7 +929,7 @@ impl Step for CompilerCoverage {
         let compiler = self.compiler;
         let target = self.target;
 
-        // Build the coverage-tool binary.
+        // Build the compiler-coverage-tool binary.
         let coverage_tool = builder.ensure(tool::CoverageTool { compiler, target });
 
         // Point at the stage1 compiler so the tool can find rustc and sysroot.
