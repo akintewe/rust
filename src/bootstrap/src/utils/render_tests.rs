@@ -48,6 +48,15 @@ pub(crate) fn try_run_tests(
 }
 
 fn run_tests(builder: &Builder<'_>, cmd: &mut BootstrapCommand, stream: bool) -> bool {
+    run_tests_with_callback(builder, cmd, stream, None)
+}
+
+pub(crate) fn run_tests_with_callback(
+    builder: &Builder<'_>,
+    cmd: &mut BootstrapCommand,
+    stream: bool,
+    on_test_finished: Option<Box<dyn Fn(&str)>>,
+) -> bool {
     builder.do_if_verbose(|| println!("running: {cmd:?}"));
 
     let Some(mut streaming_command) = cmd.stream_capture_stdout(&builder.config.exec_ctx) else {
@@ -56,7 +65,10 @@ fn run_tests(builder: &Builder<'_>, cmd: &mut BootstrapCommand, stream: bool) ->
 
     // This runs until the stdout of the child is closed, which means the child exited. We don't
     // run this on another thread since the builder is not Sync.
-    let renderer = Renderer::new(streaming_command.stdout.take().unwrap(), builder);
+    let mut renderer = Renderer::new(streaming_command.stdout.take().unwrap(), builder);
+    if let Some(cb) = on_test_finished {
+        renderer = renderer.with_on_test_finished(cb);
+    }
     if stream {
         renderer.stream_all();
     } else {
@@ -87,6 +99,7 @@ struct Renderer<'a> {
     ignored_tests: usize,
     terse_tests_in_line: usize,
     ci_latest_logged_percentage: f64,
+    on_test_finished: Option<Box<dyn Fn(&str)>>,
 }
 
 impl<'a> Renderer<'a> {
@@ -102,7 +115,13 @@ impl<'a> Renderer<'a> {
             ignored_tests: 0,
             terse_tests_in_line: 0,
             ci_latest_logged_percentage: 0.0,
+            on_test_finished: None,
         }
+    }
+
+    fn with_on_test_finished(mut self, cb: Box<dyn Fn(&str)>) -> Self {
+        self.on_test_finished = Some(cb);
+        self
     }
 
     fn render_all(mut self) {
@@ -349,8 +368,12 @@ impl<'a> Renderer<'a> {
                 self.render_test_outcome(Outcome::BenchOk, &fake_test_outcome);
                 self.benches.push(outcome);
             }
+
             Message::Test(TestMessage::Ok(outcome)) => {
                 self.render_test_outcome(Outcome::Ok, &outcome);
+                if let Some(cb) = &self.on_test_finished {
+                    cb(&outcome.name);
+                }
             }
             Message::Test(TestMessage::Ignored(outcome)) => {
                 self.render_test_outcome(
@@ -360,6 +383,9 @@ impl<'a> Renderer<'a> {
             }
             Message::Test(TestMessage::Failed(outcome)) => {
                 self.render_test_outcome(Outcome::Failed, &outcome);
+                if let Some(cb) = &self.on_test_finished {
+                    cb(&outcome.name);
+                }
                 self.failures.push(outcome);
             }
             Message::Test(TestMessage::Timeout { name }) => {

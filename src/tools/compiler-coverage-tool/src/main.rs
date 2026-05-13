@@ -16,7 +16,7 @@ use std::{env, fs};
 use compiletest::{collect_and_make_tests, parse_config};
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
+    let args: Vec<String> check test= env::args().collect();
 
     // Extract tool-specific flags; everything else goes to parse_config.
     let out_dir = arg_value(&args, "--out")
