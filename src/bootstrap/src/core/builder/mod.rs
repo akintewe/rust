@@ -870,6 +870,7 @@ impl<'a> Builder<'a> {
                 test::Ui,
                 test::Crashes,
                 test::Coverage,
+                test::CompilerCoverage,
                 test::MirOpt,
                 test::CodegenLlvm,
                 test::CodegenUnits,
