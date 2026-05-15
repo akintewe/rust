@@ -1,0 +1,13 @@
+[package]
+name = "coverage-tool"
+version = "0.0.0"
+edition = "2021"
+
+[[bin]]
+name = "coverage-tool"
+path = "src/main.rs"
+
+[dependencies]
+compiletest = { path = "../compiletest" }
+camino = "1"
+glob = "0.3"

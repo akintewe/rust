@@ -41,7 +41,7 @@ use crate::utils::helpers::{
     dylib_path, dylib_path_var, linker_args, linker_flags, t, target_supports_cranelift_backend,
     up_to_date,
 };
-use crate::utils::render_tests::{add_flags_and_try_run_tests, try_run_tests};
+use crate::utils::render_tests::{add_flags_and_try_run_tests, run_tests_with_callback, try_run_tests};
 use crate::{CLang, CodegenBackendKind, GitRepo, Mode, PathSet, TestTarget, envify};
 
 mod compiletest;
@@ -901,6 +901,101 @@ NOTE: if you're sure you want to do this, please open an issue as to why. In the
         cargo.env("TEST_RUSTC", builder.rustc(staged_compiler));
 
         run_cargo_test(cargo, &[], &[], "compiletest self test", host, builder);
+    }
+}
+
+/// Collects LLVM coverage of the Rust compiler by running the UI test suite
+/// with an instrumented stage1 rustc and merging profraw files as each test finishes.
+/// Invoked via `./x.py test src/tools/compiler-coverage-tool`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CompilerCoverage {
+    pub compiler: Compiler,
+    pub target: TargetSelection,
+}
+
+impl Step for CompilerCoverage {
+    type Output = ();
+    const IS_HOST: bool = true;
+
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
+        run.path("src/tools/compiler-coverage-tool")
+    }
+
+    fn make_run(run: RunConfig<'_>) {
+        let compiler = run.builder.compiler(run.builder.top_stage, run.build_triple());
+        run.builder.ensure(CompilerCoverage { compiler, target: run.target });
+    }
+
+    fn run(self, builder: &Builder<'_>) {
+        let compiler = self.compiler;
+        let target = self.target;
+
+        // Where profraw files land and where we write the merged profdata.
+        let profraw_dir = builder.out.join("coverage").join("profraws");
+        let profdata_path = builder.out.join("coverage").join("combined.profdata");
+        t!(fs::create_dir_all(&profraw_dir));
+
+        // Find llvm-profdata from the CI LLVM we already downloaded.
+        let llvm_profdata = builder.llvm_out(target).join("bin").join("llvm-profdata");
+
+        // Run the UI test suite with the stage1 rustc instrumented for coverage.
+        // LLVM_PROFILE_FILE uses %m (binary hash) so we get at most one profraw
+        // per binary rather than one per process.
+        let profile_file_pattern =
+            profraw_dir.join("rustc_%m.profraw").display().to_string();
+
+        let mut cmd = builder.tool_cmd(Tool::Compiletest);
+        cmd.arg("--suite").arg("ui");
+        cmd.arg("--src-base").arg(builder.src.join("tests/ui"));
+        cmd.arg("--build-base").arg(builder.out.join("tests/ui"));
+        cmd.arg("--rustc-path").arg(builder.rustc(compiler));
+        cmd.arg("--stage").arg(compiler.stage.to_string());
+        cmd.args(["-Z", "unstable-options", "--format", "json"]);
+        cmd.env("LLVM_PROFILE_FILE", &profile_file_pattern);
+        cmd.env("RUSTFLAGS", "-Cinstrument-coverage -Ccodegen-units=1");
+
+        // After each test finishes, merge its profraw into combined.profdata.
+        // By the time render_tests sees the JSON event, rustc has already exited
+        // and fclose() has been called — the profraw is guaranteed complete.
+        let profraw_dir2 = profraw_dir.clone();
+        let profdata_path2 = profdata_path.clone();
+        let llvm_profdata2 = llvm_profdata.clone();
+
+        let callback = move |_test_name: &str| {
+            // Collect all profraw files written since the last merge.
+            let profraws: Vec<_> = fs::read_dir(&profraw_dir2)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().map(|x| x == "profraw").unwrap_or(false))
+                .collect();
+
+            if profraws.is_empty() {
+                return;
+            }
+
+            // Merge into the running combined.profdata, then delete the profraws.
+            let mut merge = std::process::Command::new(&llvm_profdata2);
+            merge.arg("merge").arg("--sparse").arg("-o").arg(&profdata_path2);
+            if profdata_path2.exists() {
+                merge.arg(&profdata_path2);
+            }
+            for p in &profraws {
+                merge.arg(p);
+            }
+            if let Ok(status) = merge.output() {
+                if status.status.success() {
+                    for p in &profraws {
+                        let _ = fs::remove_file(p);
+                    }
+                }
+            }
+        };
+
+        builder.info("Collecting compiler coverage (UI test suite)");
+        run_tests_with_callback(builder, &mut cmd, false, Some(Box::new(callback)));
+
+        builder.info(&format!("Coverage profdata written to {}", profdata_path.display()));
     }
 }
 
