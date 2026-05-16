@@ -994,7 +994,7 @@ impl Step for StdarchVerify {
 
 /// Collects LLVM coverage of the Rust compiler by running the UI test suite
 /// with an instrumented stage1 rustc and merging profraw files as each test finishes.
-/// Invoked via `./x test compiler-coverage`.
+/// Invoked via `./x run compiler-coverage`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CompilerCoverage {
     pub compiler: Compiler,
@@ -1018,109 +1018,13 @@ impl Step for CompilerCoverage {
         let compiler = self.compiler;
         let target = self.target;
 
-        // Where profraw files land and where we write the merged profdata.
+        // Ensure the profraw output directory exists before running tests.
         let profraw_dir = builder.out.join("coverage").join("profraws");
-        let profdata_path = builder.out.join("coverage").join("combined.profdata");
         t!(fs::create_dir_all(&profraw_dir));
 
-        // Find llvm-profdata from the CI LLVM we already downloaded.
-        let llvm_profdata = builder.llvm_out(target).join("bin").join("llvm-profdata");
 
-        // Wrap shared state in Arc so the run_tests_fn closure (Fn, not FnOnce) can
-        // hand a fresh clone into the per-test on_test_finished Box<dyn Fn> each call.
-        let profraw_dir2 = std::sync::Arc::new(profraw_dir.clone());
-        let profdata_path2 = std::sync::Arc::new(profdata_path.clone());
-        let llvm_profdata2 = std::sync::Arc::new(llvm_profdata.clone());
-
-        // run_tests_fn replaces the normal try_run_tests call inside Compiletest::run.
-        // We set the coverage env vars on the cmd here, then fire the per-test merge
-        // callback via run_tests_with_callback so each profraw is folded in as soon as
-        // the JSON event arrives (by which point rustc has already exited and written it).
-        let run_tests_fn = std::sync::Arc::new(
-            move |builder: &Builder<'_>, cmd: &mut BootstrapCommand, stream: bool, record_failed_tests: RecordFailedTests| -> bool {
-                // Instruments rustc itself: LLVM_PROFILE_FILE tells the instrumented
-                // rustc where to write profraws. The actual `-Cinstrument-coverage`
-                // flag is applied to stage1 rustc when it's built, via the
-                // RUSTFLAGS_NOT_BOOTSTRAP env var set before `builder.ensure` below.
-                cmd.env("LLVM_PROFILE_FILE", profraw_dir2.join("rustc_%m.profraw").as_os_str());
-
-                let profraw_dir3 = profraw_dir2.clone();
-                let profdata_path3 = profdata_path2.clone();
-                let llvm_profdata3 = llvm_profdata2.clone();
-
-                let on_test_finished = move |_test_name: &str| {
-                    let profraws: Vec<_> = match fs::read_dir(profraw_dir3.as_path()) {
-                        Ok(entries) => entries
-                            .filter_map(|e| e.ok())
-                            .map(|e| e.path())
-                            .filter(|p| p.extension().map(|x| x == "profraw").unwrap_or(false))
-                            .collect(),
-                        Err(e) => {
-                            eprintln!("coverage: failed to read profraw dir: {e}");
-                            return;
-                        }
-                    };
-
-                    if profraws.is_empty() {
-                        return;
-                    }
-
-                    // Merge all pending profraws into combined.profdata, then delete them.
-                    let mut merge = std::process::Command::new(llvm_profdata3.as_path());
-                    merge.arg("merge").arg("--sparse").arg("-o").arg(profdata_path3.as_path());
-                    if profdata_path3.exists() {
-                        merge.arg(profdata_path3.as_path());
-                    }
-                    for p in &profraws {
-                        merge.arg(p);
-                    }
-                    match merge.output() {
-                        Ok(out) if out.status.success() => {
-                            for p in &profraws {
-                                if let Err(e) = fs::remove_file(p) {
-                                    eprintln!("coverage: failed to remove {}: {e}", p.display());
-                                }
-                            }
-                        }
-                        Ok(out) => {
-                            eprintln!(
-                                "coverage: llvm-profdata merge failed:\n{}",
-                                String::from_utf8_lossy(&out.stderr)
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!("coverage: failed to run llvm-profdata: {e}");
-                        }
-                    }
-                };
-
-                run_tests_with_callback(builder, cmd, stream, record_failed_tests, Some(Box::new(on_test_finished)))
-            },
-        );
 
         builder.info("Collecting compiler coverage (UI test suite)");
-
-        // Build stage1 std FIRST without coverage instrumentation. If we set
-        // RUSTFLAGS_NOT_BOOTSTRAP before this, stage1's core/std get rebuilt with
-        // `-Cinstrument-coverage`, which requires `profiler_builtins`, which itself
-        // depends on core — producing an unsolvable build cycle (E0463).
-        builder.std(compiler, compiler.host);
-        if target != compiler.host {
-            builder.std(compiler, target);
-        }
-
-        // Now set the flag so stage1 rustc gets instrumented when Compiletest's
-        // step graph rebuilds it. Bootstrap's cargo wrapper reads
-        // RUSTFLAGS_NOT_BOOTSTRAP from the process env when building non-stage0
-        // compilers, so this causes the stage1 rustc that compiletest will invoke
-        // to emit `.profraw` files at runtime.
-        // SAFETY: bootstrap's step graph is single-threaded.
-        unsafe {
-            std::env::set_var(
-                "RUSTFLAGS_NOT_BOOTSTRAP",
-                "-Cinstrument-coverage -Ccodegen-units=1",
-            );
-        }
 
         builder.ensure(Compiletest {
             test_compiler: compiler,
@@ -1129,16 +1033,84 @@ impl Step for CompilerCoverage {
             suite: "ui",
             path: "tests/ui",
             compare_mode: None,
-            run_tests_fn: Some(run_tests_fn),
+            run_tests_fn: coverage_run_tests,
         });
 
-        // SAFETY: bootstrap's step graph is single-threaded.
-        unsafe {
-            std::env::remove_var("RUSTFLAGS_NOT_BOOTSTRAP");
-        }
-
+        let profdata_path = builder.out.join("coverage").join("combined.profdata");
         builder.info(&format!("Coverage profdata written to {}", profdata_path.display()));
     }
+}
+
+/// Replacement for `try_run_tests` used by `CompilerCoverage`.
+///
+/// Adds `-Cinstrument-coverage` to the compiletest host/target rustflags so that
+/// the compiler being tested is instrumented, sets `LLVM_PROFILE_FILE` so each
+/// rustc invocation writes a `.profraw` file, and merges those profraws into a
+/// single `combined.profdata` after every passing test.
+fn coverage_run_tests(builder: &Builder<'_>, cmd: &mut BootstrapCommand, stream: bool, record_failed_tests: RecordFailedTests) -> bool {
+    // Paths for coverage output — derived from builder.out the same way
+    // CompilerCoverage::run sets them up.
+    let profraw_dir = builder.out.join("coverage").join("profraws");
+    let profdata_path = builder.out.join("coverage").join("combined.profdata");
+    let llvm_profdata =
+        builder.llvm_out(builder.config.host_target).join("bin").join("llvm-profdata");
+
+    // Pass -Cinstrument-coverage through compiletest so that the compiler under
+    // test (not bootstrap itself) is built with coverage instrumentation.
+    cmd.arg("--host-rustcflags").arg("-Cinstrument-coverage");
+    cmd.arg("--target-rustcflags").arg("-Cinstrument-coverage");
+
+    // Tell the instrumented rustc where to write its profraw files.
+    cmd.env("LLVM_PROFILE_FILE", profraw_dir.join("rustc_%m.profraw").as_os_str());
+
+    // Merge profraws after each passing test.
+    let on_test_finished = move |_test_name: &str| {
+        let profraws: Vec<_> = match fs::read_dir(&profraw_dir) {
+            Ok(entries) => entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().map(|x| x == "profraw").unwrap_or(false))
+                .collect(),
+            Err(e) => {
+                eprintln!("coverage: failed to read profraw dir: {e}");
+                return;
+            }
+        };
+
+        if profraws.is_empty() {
+            return;
+        }
+
+        // Merge all pending profraws into combined.profdata, then delete them.
+        let mut merge = std::process::Command::new(&llvm_profdata);
+        merge.arg("merge").arg("--sparse").arg("-o").arg(&profdata_path);
+        if profdata_path.exists() {
+            merge.arg(&profdata_path);
+        }
+        for p in &profraws {
+            merge.arg(p);
+        }
+        match merge.output() {
+            Ok(out) if out.status.success() => {
+                for p in &profraws {
+                    if let Err(e) = fs::remove_file(p) {
+                        eprintln!("coverage: failed to remove {}: {e}", p.display());
+                    }
+                }
+            }
+            Ok(out) => {
+                eprintln!(
+                    "coverage: llvm-profdata merge failed:\n{}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+            Err(e) => {
+                eprintln!("coverage: failed to run llvm-profdata: {e}");
+            }
+        }
+    };
+
+    run_tests_with_callback(builder, cmd, stream, record_failed_tests, Some(Box::new(on_test_finished)))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1418,7 +1390,7 @@ impl Step for RustdocJSNotStd {
             suite: "rustdoc-js",
             path: "tests/rustdoc-js",
             compare_mode: None,
-            run_tests_fn: None,
+            run_tests_fn: try_run_tests,
         });
     }
 }
@@ -1852,7 +1824,7 @@ macro_rules! test {
                         $( value = $compare_mode; )?
                         value
                     }),
-                    run_tests_fn: None,
+                    run_tests_fn: try_run_tests,
                 })
             }
         }
@@ -2057,7 +2029,7 @@ impl Step for Coverage {
             suite: Self::SUITE,
             path: Self::PATH,
             compare_mode: None,
-            run_tests_fn: None,
+            run_tests_fn: try_run_tests,
         });
     }
 }
@@ -2102,7 +2074,7 @@ impl Step for MirOpt {
                 suite: "mir-opt",
                 path: "tests/mir-opt",
                 compare_mode: None,
-                run_tests_fn: None,
+                run_tests_fn: try_run_tests,
             })
         };
 
@@ -2148,8 +2120,7 @@ struct Compiletest {
     compare_mode: Option<&'static str>,
     /// Replaces the default `try_run_tests` call. Used by `CompilerCoverage` to
     /// inject per-test profraw merging without changing normal test runs.
-    /// Excluded from Hash/Eq/Clone so step deduplication is not affected.
-    run_tests_fn: Option<std::sync::Arc<dyn Fn(&Builder<'_>, &mut BootstrapCommand, bool, RecordFailedTests) -> bool>>,
+    run_tests_fn: fn(&Builder<'_>, &mut BootstrapCommand, bool, RecordFailedTests) -> bool,
 }
 
 impl std::fmt::Debug for Compiletest {
@@ -2161,7 +2132,6 @@ impl std::fmt::Debug for Compiletest {
             .field("suite", &self.suite)
             .field("path", &self.path)
             .field("compare_mode", &self.compare_mode)
-            .field("run_tests_fn", &self.run_tests_fn.as_ref().map(|_| "<fn>"))
             .finish()
     }
 }
@@ -2192,11 +2162,7 @@ impl std::hash::Hash for Compiletest {
 
 impl Compiletest {
     fn try_run_tests(&self, builder: &Builder<'_>, cmd: &mut BootstrapCommand, stream: bool, record_failed_tests: RecordFailedTests) -> bool {
-        if let Some(f) = &self.run_tests_fn {
-            f(builder, cmd, stream, record_failed_tests)
-        } else {
-            try_run_tests(builder, cmd, stream, record_failed_tests)
-        }
+        (self.run_tests_fn)(builder, cmd, stream, record_failed_tests)
     }
 }
 

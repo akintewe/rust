@@ -870,7 +870,6 @@ impl<'a> Builder<'a> {
                 test::Ui,
                 test::Crashes,
                 test::Coverage,
-                test::CompilerCoverage,
                 test::MirOpt,
                 test::CodegenLlvm,
                 test::CodegenUnits,
@@ -1028,6 +1027,7 @@ impl<'a> Builder<'a> {
                 run::CoverageDump,
                 run::Rustfmt,
                 run::GenerateHelp,
+                test::CompilerCoverage,
             ),
             Kind::Setup => {
                 describe!(setup::Profile, setup::Hook, setup::Link, setup::Editor)
