@@ -1033,6 +1033,7 @@ impl Step for CompilerCoverage {
             suite: "ui",
             path: "tests/ui",
             compare_mode: None,
+            instrument: true,
             run_tests_fn: coverage_run_tests,
         });
 
@@ -1054,11 +1055,6 @@ fn coverage_run_tests(builder: &Builder<'_>, cmd: &mut BootstrapCommand, stream:
     let profdata_path = builder.out.join("coverage").join("combined.profdata");
     let llvm_profdata =
         builder.llvm_out(builder.config.host_target).join("bin").join("llvm-profdata");
-
-    // Pass -Cinstrument-coverage through compiletest so that the compiler under
-    // test (not bootstrap itself) is built with coverage instrumentation.
-    cmd.arg("--host-rustcflags").arg("-Cinstrument-coverage");
-    cmd.arg("--target-rustcflags").arg("-Cinstrument-coverage");
 
     // Tell the instrumented rustc where to write its profraw files.
     cmd.env("LLVM_PROFILE_FILE", profraw_dir.join("rustc_%m.profraw").as_os_str());
@@ -1390,6 +1386,7 @@ impl Step for RustdocJSNotStd {
             suite: "rustdoc-js",
             path: "tests/rustdoc-js",
             compare_mode: None,
+            instrument: false,
             run_tests_fn: try_run_tests,
         });
     }
@@ -1824,7 +1821,8 @@ macro_rules! test {
                         $( value = $compare_mode; )?
                         value
                     }),
-                    run_tests_fn: try_run_tests,
+                    instrument: false,
+            run_tests_fn: try_run_tests,
                 })
             }
         }
@@ -2029,6 +2027,7 @@ impl Step for Coverage {
             suite: Self::SUITE,
             path: Self::PATH,
             compare_mode: None,
+            instrument: false,
             run_tests_fn: try_run_tests,
         });
     }
@@ -2074,7 +2073,8 @@ impl Step for MirOpt {
                 suite: "mir-opt",
                 path: "tests/mir-opt",
                 compare_mode: None,
-                run_tests_fn: try_run_tests,
+                instrument: false,
+            run_tests_fn: try_run_tests,
             })
         };
 
@@ -2118,6 +2118,9 @@ struct Compiletest {
     suite: &'static str,
     path: &'static str,
     compare_mode: Option<&'static str>,
+    /// When true, passes `-Cinstrument-coverage` and `-Csymbol-mangling-version=v0`
+    /// to compiletest so every rustc invocation writes profraw data.
+    instrument: bool,
     /// Replaces the default `try_run_tests` call. Used by `CompilerCoverage` to
     /// inject per-test profraw merging without changing normal test runs.
     run_tests_fn: fn(&Builder<'_>, &mut BootstrapCommand, bool, RecordFailedTests) -> bool,
@@ -2132,6 +2135,7 @@ impl std::fmt::Debug for Compiletest {
             .field("suite", &self.suite)
             .field("path", &self.path)
             .field("compare_mode", &self.compare_mode)
+            .field("instrument", &self.instrument)
             .finish()
     }
 }
@@ -2144,6 +2148,7 @@ impl PartialEq for Compiletest {
             && self.suite == other.suite
             && self.path == other.path
             && self.compare_mode == other.compare_mode
+            && self.instrument == other.instrument
     }
 }
 
@@ -2157,6 +2162,7 @@ impl std::hash::Hash for Compiletest {
         self.suite.hash(state);
         self.path.hash(state);
         self.compare_mode.hash(state);
+        self.instrument.hash(state);
     }
 }
 
@@ -2522,6 +2528,13 @@ Please disable assertions with `rust.debug-assertions = false`.
         }
         if target.is_synthetic() {
             cmd.arg("--target-rustcflags").arg("-Zunstable-options");
+        }
+
+        if self.instrument {
+            cmd.arg("--host-rustcflags").arg("-Cinstrument-coverage");
+            cmd.arg("--host-rustcflags").arg("-Csymbol-mangling-version=v0");
+            cmd.arg("--target-rustcflags").arg("-Cinstrument-coverage");
+            cmd.arg("--target-rustcflags").arg("-Csymbol-mangling-version=v0");
         }
 
         cmd.arg("--python").arg(

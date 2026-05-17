@@ -1934,7 +1934,19 @@ impl<'test> TestCx<'test> {
             compiler.arg("-Cforce-unwind-tables=yes");
         }
 
-        compiler.args(&self.props.compile_flags);
+        // When coverage instrumentation is active, `-Cinstrument-coverage` requires
+        // symbol mangling v0. Filter out any per-test `symbol-mangling-version` flag
+        // that would conflict with the global `-Csymbol-mangling-version=v0`.
+        let instrumenting = self.config.target_rustcflags.iter()
+            .any(|f| f == "-Cinstrument-coverage")
+            || self.config.host_rustcflags.iter()
+            .any(|f| f == "-Cinstrument-coverage");
+        for flag in &self.props.compile_flags {
+            if instrumenting && flag.contains("symbol-mangling-version") {
+                continue;
+            }
+            compiler.arg(flag);
+        }
 
         compiler
     }
