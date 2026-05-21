@@ -1822,7 +1822,7 @@ macro_rules! test {
                         value
                     }),
                     instrument: false,
-            run_tests_fn: try_run_tests,
+                    run_tests_fn: try_run_tests,
                 })
             }
         }
@@ -2074,7 +2074,7 @@ impl Step for MirOpt {
                 path: "tests/mir-opt",
                 compare_mode: None,
                 instrument: false,
-            run_tests_fn: try_run_tests,
+                run_tests_fn: try_run_tests,
             })
         };
 
@@ -2163,12 +2163,6 @@ impl std::hash::Hash for Compiletest {
         self.path.hash(state);
         self.compare_mode.hash(state);
         self.instrument.hash(state);
-    }
-}
-
-impl Compiletest {
-    fn try_run_tests(&self, builder: &Builder<'_>, cmd: &mut BootstrapCommand, stream: bool, record_failed_tests: RecordFailedTests) -> bool {
-        (self.run_tests_fn)(builder, cmd, stream, record_failed_tests)
     }
 }
 
@@ -2853,7 +2847,7 @@ Please disable assertions with `rust.debug-assertions = false`.
             target,
             test_compiler.stage,
         );
-        self.try_run_tests(builder, &mut cmd, false, record_failed_tests.clone());
+        (self.run_tests_fn)(builder, &mut cmd, false, record_failed_tests.clone());
 
         if let Some(compare_mode) = compare_mode {
             cmd.arg("--compare-mode").arg(compare_mode);
@@ -2876,7 +2870,7 @@ Please disable assertions with `rust.debug-assertions = false`.
                 suite, mode, compare_mode, test_compiler.host, target
             ));
             let _time = helpers::timeit(builder);
-            self.try_run_tests(builder, &mut cmd, false, record_failed_tests);
+            (self.run_tests_fn)(builder, &mut cmd, false, record_failed_tests);
         }
     }
 
