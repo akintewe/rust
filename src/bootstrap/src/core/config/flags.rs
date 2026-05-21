@@ -151,6 +151,9 @@ pub struct Flags {
     /// Unless you know exactly what you are doing, you probably don't need this.
     pub bypass_bootstrap_lock: bool,
 
+    /// instrument stage1 rustc with -Cinstrument-coverage for compiler coverage collection
+    #[arg(global = true, long)]
+    pub rust_coverage: bool,
     /// generate PGO profile with rustc build
     #[arg(global = true, value_hint = clap::ValueHint::FilePath, long, value_name = "PROFILE")]
     pub rust_profile_generate: Option<String>,

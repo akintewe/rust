@@ -1327,6 +1327,11 @@ pub fn rustc_cargo(
         ));
     }
 
+    if builder.config.rust_coverage && build_compiler.stage == 0 {
+        cargo.rustflag("-Cinstrument-coverage");
+        cargo.rustflag("-Ccodegen-units=1");
+    }
+
     // The stage0 compiler changes infrequently and does not directly depend on code
     // in the current working directory. Therefore, caching it with sccache should be
     // useful.

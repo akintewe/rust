@@ -1057,7 +1057,7 @@ fn coverage_run_tests(builder: &Builder<'_>, cmd: &mut BootstrapCommand, stream:
         builder.llvm_out(builder.config.host_target).join("bin").join("llvm-profdata");
 
     // Tell the instrumented rustc where to write its profraw files.
-    cmd.env("LLVM_PROFILE_FILE", profraw_dir.join("rustc_%m.profraw").as_os_str());
+    cmd.env("LLVM_PROFILE_FILE", profraw_dir.join("rustc_%m_%p.profraw").as_os_str());
 
     // Merge profraws after each passing test.
     let on_test_finished = move |_test_name: &str| {
