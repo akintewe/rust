@@ -1327,7 +1327,7 @@ pub fn rustc_cargo(
         ));
     }
 
-    if builder.config.rust_coverage && build_compiler.stage == 1 {
+    if builder.config.rust_coverage && build_compiler.stage == 0 {
         cargo.rustflag("-Cinstrument-coverage");
         cargo.rustflag("-Zcoverage-options=branch");
         cargo.rustflag("-Ccodegen-units=1");

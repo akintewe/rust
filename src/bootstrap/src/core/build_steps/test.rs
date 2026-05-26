@@ -1010,9 +1010,6 @@ impl Step for CompilerCoverage {
     }
 
     fn make_run(run: RunConfig<'_>) {
-        if run.builder.top_stage < 2 {
-            panic!("compiler-coverage requires --stage 2: stage1 rustc must build stage2 with -Zcoverage-options=branch");
-        }
         let compiler = run.builder.compiler(run.builder.top_stage, run.build_triple());
         run.builder.ensure(CompilerCoverage { compiler, target: run.target });
     }
