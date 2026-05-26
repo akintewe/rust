@@ -1309,6 +1309,8 @@ impl Config {
                 && src.join(".cargo/config.toml").exists(),
         );
         let verbose_tests = rust_verbose_tests.unwrap_or(exec_ctx.is_verbose());
+        let rust_coverage = flags_rust_coverage
+            || flags_paths.iter().any(|p| p.ends_with("compiler-coverage"));
 
         let record_failed_tests_path =
             out.join(build_record_failed_tests_path.unwrap_or_else(|| "failed-tests".to_string()));
@@ -1495,7 +1497,7 @@ impl Config {
             rust_parallel_frontend_threads: rust_parallel_frontend_threads.map(threads_from_config),
             rust_profile_generate: flags_rust_profile_generate.or(rust_profile_generate),
             rust_profile_use: flags_rust_profile_use.or(rust_profile_use),
-            rust_coverage: flags_rust_coverage,
+            rust_coverage,
             rust_randomize_layout: rust_randomize_layout.unwrap_or(false),
             rust_remap_debuginfo: rust_remap_debuginfo.unwrap_or(false),
             rust_rpath: rust_rpath.unwrap_or(true),
@@ -1779,7 +1781,8 @@ impl Config {
     }
 
     pub fn any_profiler_enabled(&self) -> bool {
-        self.target_config.values().any(|t| matches!(&t.profiler, Some(p) if p.is_string_or_true()))
+        self.rust_coverage
+            || self.target_config.values().any(|t| matches!(&t.profiler, Some(p) if p.is_string_or_true()))
             || self.profiler
     }
 
@@ -1860,6 +1863,9 @@ impl Config {
     }
 
     pub fn profiler_enabled(&self, target: TargetSelection) -> bool {
+        if self.rust_coverage {
+            return true;
+        }
         self.target_config
             .get(&target)
             .and_then(|t| t.profiler.as_ref())

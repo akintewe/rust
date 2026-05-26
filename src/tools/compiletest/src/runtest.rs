@@ -1938,9 +1938,9 @@ impl<'test> TestCx<'test> {
         // symbol mangling v0. Filter out any per-test `symbol-mangling-version` flag
         // that would conflict with the global `-Csymbol-mangling-version=v0`.
         let instrumenting = self.config.target_rustcflags.iter()
-            .any(|f| f == "-Cinstrument-coverage")
+            .any(|f| f.starts_with("-Cinstrument-coverage"))
             || self.config.host_rustcflags.iter()
-            .any(|f| f == "-Cinstrument-coverage");
+            .any(|f| f.starts_with("-Cinstrument-coverage"));
         for flag in &self.props.compile_flags {
             if instrumenting && flag.contains("symbol-mangling-version") {
                 continue;

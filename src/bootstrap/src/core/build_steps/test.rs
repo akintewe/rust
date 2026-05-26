@@ -1010,6 +1010,9 @@ impl Step for CompilerCoverage {
     }
 
     fn make_run(run: RunConfig<'_>) {
+        if run.builder.top_stage < 2 {
+            panic!("compiler-coverage requires --stage 2: stage1 rustc must build stage2 with -Zcoverage-options=branch");
+        }
         let compiler = run.builder.compiler(run.builder.top_stage, run.build_triple());
         run.builder.ensure(CompilerCoverage { compiler, target: run.target });
     }
@@ -2526,8 +2529,10 @@ Please disable assertions with `rust.debug-assertions = false`.
 
         if self.instrument {
             cmd.arg("--host-rustcflags").arg("-Cinstrument-coverage");
+            cmd.arg("--host-rustcflags").arg("-Zcoverage-options=branch");
             cmd.arg("--host-rustcflags").arg("-Csymbol-mangling-version=v0");
             cmd.arg("--target-rustcflags").arg("-Cinstrument-coverage");
+            cmd.arg("--target-rustcflags").arg("-Zcoverage-options=branch");
             cmd.arg("--target-rustcflags").arg("-Csymbol-mangling-version=v0");
         }
 
