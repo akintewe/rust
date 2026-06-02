@@ -1941,6 +1941,9 @@ impl<'test> TestCx<'test> {
             .any(|f| f.starts_with("-Cinstrument-coverage"))
             || self.config.host_rustcflags.iter()
             .any(|f| f.starts_with("-Cinstrument-coverage"));
+        if instrumenting && self.props.no_std {
+            compiler.arg("-Cpanic=abort");
+        }
         for flag in &self.props.compile_flags {
             if instrumenting && flag.contains("symbol-mangling-version") {
                 continue;
