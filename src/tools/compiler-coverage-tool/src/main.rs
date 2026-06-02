@@ -36,6 +36,12 @@ fn main() -> Result<()> {
 
     for (name, counts) in records {
         let demangled = format!("{:#}", demangle(&name));
+
+        // only include rustc* crates
+        if !demangled.starts_with("rustc") {
+            continue;
+        }
+
         let total = counts.len();
         let hit = counts.iter().filter(|&&c| c > 0).count();
 
