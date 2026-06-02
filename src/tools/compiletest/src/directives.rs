@@ -214,8 +214,6 @@ pub(crate) struct TestProps {
     pub(crate) disable_gdb_pretty_printers: bool,
     /// Compare the output by lines, rather than as a single string.
     pub(crate) compare_output_by_lines: bool,
-    /// Whether the test file contains `#![no_std]` or `#![no_core]`.
-    pub(crate) no_std: bool,
 }
 
 mod directives {
@@ -320,7 +318,6 @@ impl TestProps {
             dont_require_annotations: Default::default(),
             disable_gdb_pretty_printers: false,
             compare_output_by_lines: false,
-            no_std: false,
         }
     }
 
@@ -361,7 +358,6 @@ impl TestProps {
         if !testfile.is_dir() {
             let file_contents = fs::read_to_string(testfile).unwrap();
             let file_directives = FileDirectives::from_file_contents(testfile, &file_contents);
-            self.no_std = file_directives.has_explicit_no_std_core_attribute;
 
             iter_directives(
                 config,

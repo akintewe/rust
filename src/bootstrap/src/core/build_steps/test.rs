@@ -2524,14 +2524,9 @@ Please disable assertions with `rust.debug-assertions = false`.
             cmd.arg("--target-rustcflags").arg("-Zunstable-options");
         }
 
-        if self.instrument {
-            cmd.arg("--host-rustcflags").arg("-Cinstrument-coverage");
-            cmd.arg("--host-rustcflags").arg("-Zcoverage-options=branch");
-            cmd.arg("--host-rustcflags").arg("-Csymbol-mangling-version=v0");
-            cmd.arg("--target-rustcflags").arg("-Cinstrument-coverage");
-            cmd.arg("--target-rustcflags").arg("-Zcoverage-options=branch");
-            cmd.arg("--target-rustcflags").arg("-Csymbol-mangling-version=v0");
-        }
+        // When collecting coverage, LLVM_PROFILE_FILE is set on the compiletest
+        // process and inherited by rustc subprocesses. Since rustc itself is
+        // instrumented (via compile.rs), no extra flags are needed here.
 
         cmd.arg("--python").arg(
             builder.config.python.as_ref().expect("python is required for running rustdoc tests"),
