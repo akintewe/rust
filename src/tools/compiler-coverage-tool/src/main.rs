@@ -223,6 +223,14 @@ fn render_html(
     uncovered_count: usize,
     total: usize,
 ) -> String {
+    let covered_lines_total: usize = categorised.iter().map(|(r, _)| {
+        r.lines.iter().filter(|&&s| s == LineStatus::Covered).count()
+    }).sum();
+    let tracked_lines_total: usize = categorised.iter().map(|(r, _)| {
+        r.lines.iter().filter(|&&s| s != LineStatus::Ignored).count()
+    }).sum();
+    let overall_pct = pct(covered_lines_total, tracked_lines_total);
+
     let mut out = String::new();
 
     out.push_str(r#"<!DOCTYPE html>
@@ -231,154 +239,190 @@ fn render_html(
 <meta charset="utf-8">
 <title>Compiler Coverage Report</title>
 <style>
-body { font-family: monospace; margin: 0; background: #1e1e1e; color: #d4d4d4; }
-h1 { color: #9cdcfe; padding: 1em 2em 0; }
-.summary { display: flex; gap: 1.5em; padding: 1em 2em 2em; }
-.box { padding: 1em 2em; border-radius: 4px; text-align: center; min-width: 10em; }
-.box .num { font-size: 2em; font-weight: bold; }
-.box .label { font-size: 0.85em; color: #aaa; margin-top: 0.3em; }
-.green-box { background: #1a2e1a; border: 1px solid #4caf50; }
-.yellow-box { background: #2e2a1a; border: 1px solid #ffeb3b; }
-.red-box { background: #2e1a1a; border: 1px solid #f44336; }
-.filters { padding: 0 2em 1em; display: flex; gap: 0.5em; }
-.filters button { padding: 0.4em 1em; border-radius: 3px; border: none; cursor: pointer; font-family: monospace; }
-.btn-partial { background: #3a3a1e; color: #ffeb3b; }
-.btn-uncovered { background: #3a1e1e; color: #f44336; }
-.btn-fully { background: #1e3a1e; color: #4caf50; }
-.btn-all { background: #2a2a2a; color: #d4d4d4; }
-.section { padding: 0 2em; }
-.fn-block { margin-bottom: 0.5em; border-radius: 3px; overflow: hidden; }
+* { box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; background: #f8f9fa; color: #212529; }
+.header { background: #fff; border-bottom: 1px solid #dee2e6; padding: 1.5em 2em; }
+.header h1 { margin: 0 0 0.2em; font-size: 1.4em; color: #343a40; }
+.overall { font-size: 2.2em; font-weight: bold; color: #212529; margin: 0.2em 0; }
+.overall-sub { color: #6c757d; font-size: 0.95em; }
+.filter-bar { display: flex; gap: 0.5em; padding: 1em 2em; background: #fff; border-bottom: 1px solid #dee2e6; flex-wrap: wrap; align-items: center; }
+.filter-bar span { color: #6c757d; font-size: 0.9em; margin-right: 0.5em; }
+.filter-bar button {
+  padding: 0.35em 1em; border-radius: 20px; border: 1px solid; cursor: pointer;
+  font-size: 0.85em; font-family: inherit; background: #fff;
+}
+.btn-all { border-color: #adb5bd; color: #495057; }
+.btn-all.active, .btn-all:hover { background: #495057; color: #fff; }
+.btn-uncovered { border-color: #dc3545; color: #dc3545; }
+.btn-uncovered.active, .btn-uncovered:hover { background: #dc3545; color: #fff; }
+.btn-partial { border-color: #fd7e14; color: #fd7e14; }
+.btn-partial.active, .btn-partial:hover { background: #fd7e14; color: #fff; }
+.btn-fully { border-color: #198754; color: #198754; }
+.btn-fully.active, .btn-fully:hover { background: #198754; color: #fff; }
+.section-header {
+  padding: 0.6em 2em; font-size: 0.85em; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.05em; color: #fff; margin-top: 1px;
+}
+.section-header.uncovered { background: #dc3545; }
+.section-header.partial { background: #fd7e14; }
+.section-header.fully { background: #198754; }
+.fn-list { padding: 0 2em; }
+.fn-block { border: 1px solid #dee2e6; border-radius: 4px; margin: 0.5em 0; background: #fff; overflow: hidden; }
 .fn-block.hidden { display: none; }
 details > summary {
-  padding: 0.5em 1em;
-  cursor: pointer;
-  list-style: none;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  user-select: none;
+  padding: 0.7em 1em; cursor: pointer; list-style: none;
+  display: grid; grid-template-columns: 1fr auto;
+  align-items: start; gap: 1em; user-select: none;
 }
+details > summary:hover { background: #f8f9fa; }
 details > summary::-webkit-details-marker { display: none; }
-.hdr-fully { background: #1a2e1a; }
-.hdr-partial { background: #2e2a1a; }
-.hdr-uncovered { background: #2e1a1a; }
-.fn-name { font-size: 0.9em; word-break: break-all; }
-.fn-meta { font-size: 0.8em; color: #888; white-space: nowrap; margin-left: 1em; }
-.source { background: #141414; overflow-x: auto; }
-table.src { border-collapse: collapse; width: 100%; }
-td.lineno { color: #555; text-align: right; padding: 0 0.8em; min-width: 3em; user-select: none; border-right: 1px solid #333; }
-td.code { padding: 0 1em; white-space: pre; }
-tr.line-covered td.code { background: #1a2e1a; }
-tr.line-uncovered td.code { background: #2e1a1a; }
-tr.line-ignored td.code { }
+.fn-left { min-width: 0; }
+.fn-name { font-size: 0.9em; font-weight: 600; color: #212529; word-break: break-all; font-family: "SFMono-Regular", Consolas, monospace; }
+.fn-file { font-size: 0.8em; color: #6c757d; margin-top: 0.2em; font-family: "SFMono-Regular", Consolas, monospace; }
+.fn-badge {
+  font-size: 0.8em; font-weight: 600; padding: 0.2em 0.6em;
+  border-radius: 3px; white-space: nowrap; font-family: inherit;
+}
+.badge-fully { background: #d1e7dd; color: #0a3622; }
+.badge-partial { background: #ffe5d0; color: #6c2a00; }
+.badge-uncovered { background: #f8d7da; color: #58151c; }
+.source-view { border-top: 1px solid #dee2e6; overflow-x: auto; background: #fdfdfd; }
+table.src { border-collapse: collapse; width: 100%; font-family: "SFMono-Regular", Consolas, monospace; font-size: 0.82em; }
+td.lineno {
+  color: #adb5bd; text-align: right; padding: 1px 0.8em; min-width: 3.5em;
+  user-select: none; border-right: 2px solid #dee2e6; vertical-align: top;
+}
+td.code { padding: 1px 1em; white-space: pre; }
+tr.line-covered td.lineno { border-right-color: #198754; }
+tr.line-covered td.code { background: #d1e7dd; }
+tr.line-uncovered td.lineno { border-right-color: #dc3545; }
+tr.line-uncovered td.code { background: #f8d7da; }
+tr.line-ignored td.code { color: #6c757d; }
 </style>
 </head>
 <body>
 "#);
 
     out.push_str(&format!(
-        r#"<h1>Compiler Coverage Report</h1>
-<div class="summary">
-  <div class="box green-box">
-    <div class="num">{}</div>
-    <div class="label">Fully Covered<br>{:.1}%</div>
-  </div>
-  <div class="box yellow-box">
-    <div class="num">{}</div>
-    <div class="label">Partially Covered<br>{:.1}%</div>
-  </div>
-  <div class="box red-box">
-    <div class="num">{}</div>
-    <div class="label">Uncovered<br>{:.1}%</div>
-  </div>
+        r#"<div class="header">
+  <h1>Rust Compiler Coverage Report</h1>
+  <div class="overall">{overall_pct:.2}% ({covered_lines_total}/{tracked_lines_total} lines)</div>
+  <div class="overall-sub">Below is a list of all functions in the compiler. Use the expander to review line coverage of any function.</div>
 </div>
-"#,
-        fully_count, pct(fully_count, total),
-        partial_count, pct(partial_count, total),
-        uncovered_count, pct(uncovered_count, total),
-    ));
-
-    out.push_str(r#"<div class="filters">
-  <button class="btn-all" onclick="show('all')">All</button>
-  <button class="btn-uncovered" onclick="show('uncovered')">Uncovered only</button>
-  <button class="btn-partial" onclick="show('partial')">Partially covered only</button>
-  <button class="btn-fully" onclick="show('fully')">Fully covered only</button>
+<div class="filter-bar">
+  <span>Filter by status:</span>
+  <button class="btn-all active" onclick="show('all', this)">{total} All</button>
+  <button class="btn-fully" onclick="show('fully', this)">{fully_count} Fully Covered</button>
+  <button class="btn-partial" onclick="show('partial', this)">{partial_count} Partially Covered</button>
+  <button class="btn-uncovered" onclick="show('uncovered', this)">{uncovered_count} Fully Uncovered</button>
 </div>
 <script>
-function show(cat) {
-  document.querySelectorAll('.fn-block').forEach(el => {
-    if (cat === 'all') { el.classList.remove('hidden'); }
-    else { el.classList.toggle('hidden', !el.classList.contains('cat-' + cat)); }
-  });
-}
+function show(cat, btn) {{
+  document.querySelectorAll('.filter-bar button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelectorAll('.fn-block').forEach(el => {{
+    if (cat === 'all') {{ el.classList.remove('hidden'); }}
+    else {{ el.classList.toggle('hidden', !el.classList.contains('cat-' + cat)); }}
+  }});
+  document.querySelectorAll('.section-header').forEach(el => {{
+    if (cat === 'all') {{ el.style.display = ''; }}
+    else {{ el.style.display = el.classList.contains(cat) ? '' : 'none'; }}
+  }});
+}}
 </script>
-<div class="section">
-"#);
-
-    for (report, cat) in categorised {
-        let (hdr_class, cat_class) = match cat {
-            FunctionCategory::FullyCovered => ("hdr-fully", "cat-fully"),
-            FunctionCategory::PartiallyCovered => ("hdr-partial", "cat-partial"),
-            FunctionCategory::FullyUncovered => ("hdr-uncovered", "cat-uncovered"),
-        };
-
-        let short_filename = if let Some(idx) = report.filename.find("/compiler/") {
-            &report.filename[idx + 1..]
-        } else {
-            &report.filename
-        };
-
-        let covered_lines = report.lines.iter().filter(|&&s| s == LineStatus::Covered).count();
-        let total_tracked = report.lines.iter().filter(|&&s| s != LineStatus::Ignored).count();
-        let pct_str = if total_tracked > 0 {
-            format!("{:.0}%", pct(covered_lines, total_tracked))
-        } else {
-            "100%".to_string()
-        };
-
-        out.push_str(&format!(
-            r#"<div class="fn-block {cat_class}">
-<details>
-<summary class="{hdr_class}">
-  <span class="fn-name">{fn_name}</span>
-  <span class="fn-meta">{pct_str} &nbsp;|&nbsp; {short_file}:{line_start}</span>
-</summary>
-<div class="source"><table class="src">
 "#,
+        overall_pct = overall_pct,
+        covered_lines_total = covered_lines_total,
+        tracked_lines_total = tracked_lines_total,
+        total = total,
+        fully_count = fully_count,
+        partial_count = partial_count,
+        uncovered_count = uncovered_count,
+    ));
+
+    // render in order: uncovered first (most interesting), then partial, then fully
+    let order = [
+        (FunctionCategory::FullyUncovered, "uncovered", "Fully Uncovered", uncovered_count),
+        (FunctionCategory::PartiallyCovered, "partial", "Partially Covered", partial_count),
+        (FunctionCategory::FullyCovered, "fully", "Fully Covered", fully_count),
+    ];
+
+    for (cat_variant, cat_class, label, count) in &order {
+        out.push_str(&format!(
+            "<div class=\"section-header {cat_class}\">{label} ({count})</div>\n<div class=\"fn-list\">\n",
             cat_class = cat_class,
-            hdr_class = hdr_class,
-            fn_name = escape(&report.demangled),
-            pct_str = pct_str,
-            short_file = escape(short_filename),
-            line_start = report.line_start,
+            label = label,
+            count = count,
         ));
 
-        let source_lines = source_cache.get(&report.filename);
+        for (report, cat) in categorised {
+            if cat != cat_variant { continue; }
 
-        for (i, &status) in report.lines.iter().enumerate() {
-            let lineno = report.line_start + i;
-            let line_class = match status {
-                LineStatus::Covered => "line-covered",
-                LineStatus::Uncovered => "line-uncovered",
-                LineStatus::Ignored => "line-ignored",
+            let short_filename = if let Some(idx) = report.filename.find("/compiler/") {
+                &report.filename[idx + 1..]
+            } else {
+                &report.filename
             };
-            let src_text = source_lines
-                .and_then(|ls| ls.get(lineno.saturating_sub(1)))
-                .map(|s| s.as_str())
-                .unwrap_or("");
+
+            let covered_lines = report.lines.iter().filter(|&&s| s == LineStatus::Covered).count();
+            let total_tracked = report.lines.iter().filter(|&&s| s != LineStatus::Ignored).count();
+            let fn_pct = if total_tracked > 0 { pct(covered_lines, total_tracked) } else { 100.0 };
+
+            let (badge_class, badge_text) = match cat_variant {
+                FunctionCategory::FullyCovered => ("badge-fully", format!("100% covered")),
+                FunctionCategory::PartiallyCovered => ("badge-partial", format!("{fn_pct:.0}% covered")),
+                FunctionCategory::FullyUncovered => ("badge-uncovered", "0% covered".to_string()),
+            };
 
             out.push_str(&format!(
-                "<tr class=\"{line_class}\"><td class=\"lineno\">{lineno}</td><td class=\"code\">{code}</td></tr>\n",
-                line_class = line_class,
-                lineno = lineno,
-                code = escape(src_text),
+                r#"<div class="fn-block cat-{cat_class}">
+<details>
+<summary>
+  <div class="fn-left">
+    <div class="fn-name">{fn_name}</div>
+    <div class="fn-file">File: {short_file}:{line_start}</div>
+  </div>
+  <span class="fn-badge {badge_class}">{badge_text}</span>
+</summary>
+<div class="source-view"><table class="src">
+"#,
+                cat_class = cat_class,
+                fn_name = escape(&report.demangled),
+                short_file = escape(short_filename),
+                line_start = report.line_start,
+                badge_class = badge_class,
+                badge_text = badge_text,
             ));
+
+            let source_lines = source_cache.get(&report.filename);
+
+            for (i, &status) in report.lines.iter().enumerate() {
+                let lineno = report.line_start + i;
+                let line_class = match status {
+                    LineStatus::Covered => "line-covered",
+                    LineStatus::Uncovered => "line-uncovered",
+                    LineStatus::Ignored => "line-ignored",
+                };
+                let src_text = source_lines
+                    .and_then(|ls| ls.get(lineno.saturating_sub(1)))
+                    .map(|s| s.as_str())
+                    .unwrap_or("");
+
+                out.push_str(&format!(
+                    "<tr class=\"{line_class}\"><td class=\"lineno\">{lineno}</td><td class=\"code\">{code}</td></tr>\n",
+                    line_class = line_class,
+                    lineno = lineno,
+                    code = escape(src_text),
+                ));
+            }
+
+            out.push_str("</table></div></details></div>\n");
         }
 
-        out.push_str("</table></div></details></div>\n");
+        out.push_str("</div>\n");
     }
 
-    out.push_str("</div></body></html>\n");
+    out.push_str("</body></html>\n");
     out
 }
 
