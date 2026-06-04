@@ -162,7 +162,13 @@ fn main() -> Result<()> {
         });
     }
 
-    eprintln!("{} compiler functions processed", reports.len());
+    eprintln!("{} compiler functions processed (before merging monomorphizations)", reports.len());
+
+    // merge monomorphizations — group by (filename, line_start), union line coverage
+    // if any instantiation covered a line, that line counts as covered
+    let reports = merge_monomorphizations(reports);
+
+    eprintln!("{} functions after merging monomorphizations", reports.len());
 
     // categorise
     let categorised: Vec<(&FunctionReport, FunctionCategory)> = reports.iter().map(|r| {
@@ -198,6 +204,38 @@ fn main() -> Result<()> {
     println!("  total:            {}", total);
 
     Ok(())
+}
+
+fn merge_monomorphizations(reports: Vec<FunctionReport>) -> Vec<FunctionReport> {
+    // key: (filename, line_start) — same source location = same generic function
+    // we keep the shortest demangled name as the display name (least type noise)
+    // and union the line statuses: Covered beats Uncovered beats Ignored
+    let mut groups: std::collections::BTreeMap<(String, usize), FunctionReport> = std::collections::BTreeMap::new();
+
+    for report in reports {
+        let key = (report.filename.clone(), report.line_start);
+        match groups.get_mut(&key) {
+            None => { groups.insert(key, report); }
+            Some(existing) => {
+                // union line statuses — if any mono covered the line, it's covered
+                for (i, status) in report.lines.iter().enumerate() {
+                    if let Some(existing_status) = existing.lines.get_mut(i) {
+                        *existing_status = match (*existing_status, *status) {
+                            (LineStatus::Covered, _) | (_, LineStatus::Covered) => LineStatus::Covered,
+                            (LineStatus::Uncovered, _) | (_, LineStatus::Uncovered) => LineStatus::Uncovered,
+                            _ => LineStatus::Ignored,
+                        };
+                    }
+                }
+                // prefer shorter name — less generic noise
+                if report.demangled.len() < existing.demangled.len() {
+                    existing.demangled = report.demangled;
+                }
+            }
+        }
+    }
+
+    groups.into_values().collect()
 }
 
 fn resolve_source_path(filename: &str, src_root: &Path) -> Option<PathBuf> {
