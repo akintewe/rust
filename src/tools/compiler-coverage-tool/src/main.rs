@@ -251,6 +251,14 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; m
   padding: 0.35em 1em; border-radius: 20px; border: 1px solid; cursor: pointer;
   font-size: 0.85em; font-family: inherit; background: #fff;
 }
+.search-bar { padding: 0.6em 2em; background: #fff; border-bottom: 1px solid #dee2e6; display: flex; align-items: center; gap: 0.5em; }
+.search-bar input {
+  padding: 0.4em 0.8em; border: 1px solid #ced4da; border-radius: 4px;
+  font-size: 0.9em; font-family: "SFMono-Regular", Consolas, monospace;
+  width: 30em; outline: none;
+}
+.search-bar input:focus { border-color: #86b7fe; box-shadow: 0 0 0 2px rgba(13,110,253,0.15); }
+.search-bar .search-count { font-size: 0.85em; color: #6c757d; }
 .btn-all { border-color: #adb5bd; color: #495057; }
 .btn-all.active, .btn-all:hover { background: #495057; color: #fff; }
 .btn-uncovered { border-color: #dc3545; color: #dc3545; }
@@ -317,19 +325,45 @@ tr.line-ignored td.code { color: #6c757d; }
   <button class="btn-uncovered" onclick="show('uncovered', this)">{uncovered_count} Fully Uncovered</button>
 </div>
 <script>
+var currentCat = 'all';
+var currentSearch = '';
+
+function applyFilters() {{
+  var query = currentSearch.toLowerCase();
+  var visible = 0;
+  document.querySelectorAll('.fn-block').forEach(el => {{
+    var catMatch = currentCat === 'all' || el.classList.contains('cat-' + currentCat);
+    var name = el.querySelector('.fn-name') ? el.querySelector('.fn-name').textContent.toLowerCase() : '';
+    var file = el.querySelector('.fn-file') ? el.querySelector('.fn-file').textContent.toLowerCase() : '';
+    var searchMatch = query === '' || name.includes(query) || file.includes(query);
+    var hide = !(catMatch && searchMatch);
+    el.classList.toggle('hidden', hide);
+    if (!hide) visible++;
+  }});
+  document.querySelectorAll('.section-header').forEach(el => {{
+    if (currentCat === 'all') {{ el.style.display = ''; }}
+    else {{ el.style.display = el.classList.contains(currentCat) ? '' : 'none'; }}
+  }});
+  var countEl = document.getElementById('search-count');
+  if (countEl) countEl.textContent = query ? visible + ' result' + (visible === 1 ? '' : 's') : '';
+}}
+
 function show(cat, btn) {{
   document.querySelectorAll('.filter-bar button').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
-  document.querySelectorAll('.fn-block').forEach(el => {{
-    if (cat === 'all') {{ el.classList.remove('hidden'); }}
-    else {{ el.classList.toggle('hidden', !el.classList.contains('cat-' + cat)); }}
-  }});
-  document.querySelectorAll('.section-header').forEach(el => {{
-    if (cat === 'all') {{ el.style.display = ''; }}
-    else {{ el.style.display = el.classList.contains(cat) ? '' : 'none'; }}
-  }});
+  currentCat = cat;
+  applyFilters();
+}}
+
+function onSearch(val) {{
+  currentSearch = val;
+  applyFilters();
 }}
 </script>
+<div class="search-bar">
+  <input type="text" placeholder="Search functions or file paths..." oninput="onSearch(this.value)" />
+  <span class="search-count" id="search-count"></span>
+</div>
 "#,
         overall_pct = overall_pct,
         covered_lines_total = covered_lines_total,
