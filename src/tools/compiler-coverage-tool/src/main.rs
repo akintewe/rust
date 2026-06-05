@@ -23,20 +23,15 @@ struct Function {
     regions: Vec<Vec<serde_json::Value>>,
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum LineStatus {
-    Covered,
-    Uncovered,
-    Ignored, // not tracked by LLVM (e.g. closing braces)
-}
-
 struct FunctionReport {
     demangled: String,
     filename: String,
     line_start: usize,
     line_end: usize,
-    // per-line status for lines line_start..=line_end
-    lines: Vec<LineStatus>,
+    // per-line hit counts for lines line_start..=line_end
+    // None = LLVM doesn't track this line (closing braces etc)
+    // Some(n) = total hits across all merged monomorphizations
+    line_counts: Vec<Option<u64>>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -111,26 +106,23 @@ fn main() -> Result<()> {
             continue;
         }
 
-        // build per-line coverage map from regions
+        // build per-line hit count map from regions
         // region format: [line_start, col_start, line_end, col_end, count, file_id, ...]
-        let mut line_counts: HashMap<usize, u64> = HashMap::new();
+        // use minimum count within each region — a line is only as covered as its least-hit region
+        let mut region_counts: HashMap<usize, u64> = HashMap::new();
         for region in &func.regions {
             if region.len() < 5 { continue; }
             let rs = region[0].as_u64().unwrap_or(0) as usize;
             let re = region[2].as_u64().unwrap_or(0) as usize;
             let count = region[4].as_u64().unwrap_or(0);
             for line in rs..=re {
-                // keep the minimum — if any region covering this line is 0, it's uncovered
-                let entry = line_counts.entry(line).or_insert(count);
-                if count < *entry {
-                    *entry = count;
-                }
+                let entry = region_counts.entry(line).or_insert(count);
+                if count < *entry { *entry = count; }
             }
         }
 
         // load source file
         if !source_cache.contains_key(&filename) {
-            // try to resolve path relative to src_root by stripping the absolute prefix
             let resolved = resolve_source_path(&filename, &src_root);
             let lines = match resolved.and_then(|p| std::fs::read_to_string(&p).ok()) {
                 Some(text) => text.lines().map(|l| l.to_string()).collect::<Vec<_>>(),
@@ -139,26 +131,17 @@ fn main() -> Result<()> {
             source_cache.insert(filename.clone(), lines);
         }
 
-        let source_lines = &source_cache[&filename];
-
-        let mut lines = vec![];
-        for lineno in line_start..=line_end {
-            let status = match line_counts.get(&lineno) {
-                None => LineStatus::Ignored,
-                Some(0) => LineStatus::Uncovered,
-                Some(_) => LineStatus::Covered,
-            };
-            // if source is empty we still emit the status
-            let _ = source_lines.get(lineno.saturating_sub(1));
-            lines.push(status);
-        }
+        // store raw counts — None means LLVM doesn't track this line
+        let line_counts: Vec<Option<u64>> = (line_start..=line_end)
+            .map(|lineno| region_counts.get(&lineno).copied())
+            .collect();
 
         reports.push(FunctionReport {
             demangled,
             filename,
             line_start,
             line_end,
-            lines,
+            line_counts,
         });
     }
 
@@ -170,14 +153,14 @@ fn main() -> Result<()> {
 
     eprintln!("{} functions after merging monomorphizations", reports.len());
 
-    // categorise
+    // categorise based on summed counts
     let categorised: Vec<(&FunctionReport, FunctionCategory)> = reports.iter().map(|r| {
-        let tracked: Vec<_> = r.lines.iter().filter(|&&s| s != LineStatus::Ignored).collect();
+        let tracked: Vec<u64> = r.line_counts.iter().filter_map(|c| *c).collect();
         let cat = if tracked.is_empty() {
             FunctionCategory::FullyCovered
-        } else if tracked.iter().all(|&&s| s == LineStatus::Covered) {
+        } else if tracked.iter().all(|&c| c > 0) {
             FunctionCategory::FullyCovered
-        } else if tracked.iter().all(|&&s| s == LineStatus::Uncovered) {
+        } else if tracked.iter().all(|&c| c == 0) {
             FunctionCategory::FullyUncovered
         } else {
             FunctionCategory::PartiallyCovered
@@ -208,8 +191,8 @@ fn main() -> Result<()> {
 
 fn merge_monomorphizations(reports: Vec<FunctionReport>) -> Vec<FunctionReport> {
     // key: (filename, line_start) — same source location = same generic function
-    // we keep the shortest demangled name as the display name (least type noise)
-    // and union the line statuses: Covered beats Uncovered beats Ignored
+    // sum hit counts across all monomorphizations — a branch covered by one mono
+    // contributes its count to the total, so two partials can become fully covered
     let mut groups: std::collections::BTreeMap<(String, usize), FunctionReport> = std::collections::BTreeMap::new();
 
     for report in reports {
@@ -217,17 +200,18 @@ fn merge_monomorphizations(reports: Vec<FunctionReport>) -> Vec<FunctionReport> 
         match groups.get_mut(&key) {
             None => { groups.insert(key, report); }
             Some(existing) => {
-                // union line statuses — if any mono covered the line, it's covered
-                for (i, status) in report.lines.iter().enumerate() {
-                    if let Some(existing_status) = existing.lines.get_mut(i) {
-                        *existing_status = match (*existing_status, *status) {
-                            (LineStatus::Covered, _) | (_, LineStatus::Covered) => LineStatus::Covered,
-                            (LineStatus::Uncovered, _) | (_, LineStatus::Uncovered) => LineStatus::Uncovered,
-                            _ => LineStatus::Ignored,
+                // sum counts — None (ignored) stays None, Some values are added
+                for (i, count) in report.line_counts.iter().enumerate() {
+                    if let Some(existing_count) = existing.line_counts.get_mut(i) {
+                        *existing_count = match (*existing_count, *count) {
+                            (Some(a), Some(b)) => Some(a + b),
+                            (Some(a), None) => Some(a),
+                            (None, Some(b)) => Some(b),
+                            (None, None) => None,
                         };
                     }
                 }
-                // prefer shorter name — less generic noise
+                // prefer shorter name — less generic type noise
                 if report.demangled.len() < existing.demangled.len() {
                     existing.demangled = report.demangled;
                 }
@@ -262,10 +246,10 @@ fn render_html(
     total: usize,
 ) -> String {
     let covered_lines_total: usize = categorised.iter().map(|(r, _)| {
-        r.lines.iter().filter(|&&s| s == LineStatus::Covered).count()
+        r.line_counts.iter().filter(|c| c.map_or(false, |n| n > 0)).count()
     }).sum();
     let tracked_lines_total: usize = categorised.iter().map(|(r, _)| {
-        r.lines.iter().filter(|&&s| s != LineStatus::Ignored).count()
+        r.line_counts.iter().filter(|c| c.is_some()).count()
     }).sum();
     let overall_pct = pct(covered_lines_total, tracked_lines_total);
 
@@ -436,8 +420,8 @@ function onSearch(val) {{
                 &report.filename
             };
 
-            let covered_lines = report.lines.iter().filter(|&&s| s == LineStatus::Covered).count();
-            let total_tracked = report.lines.iter().filter(|&&s| s != LineStatus::Ignored).count();
+            let covered_lines = report.line_counts.iter().filter(|c| c.map_or(false, |n| n > 0)).count();
+            let total_tracked = report.line_counts.iter().filter(|c| c.is_some()).count();
             let fn_pct = if total_tracked > 0 { pct(covered_lines, total_tracked) } else { 100.0 };
 
             let (badge_class, badge_text) = match cat_variant {
@@ -468,12 +452,12 @@ function onSearch(val) {{
 
             let source_lines = source_cache.get(&report.filename);
 
-            for (i, &status) in report.lines.iter().enumerate() {
+            for (i, count) in report.line_counts.iter().enumerate() {
                 let lineno = report.line_start + i;
-                let line_class = match status {
-                    LineStatus::Covered => "line-covered",
-                    LineStatus::Uncovered => "line-uncovered",
-                    LineStatus::Ignored => "line-ignored",
+                let line_class = match count {
+                    Some(n) if *n > 0 => "line-covered",
+                    Some(_) => "line-uncovered",
+                    None => "line-ignored",
                 };
                 let src_text = source_lines
                     .and_then(|ls| ls.get(lineno.saturating_sub(1)))
