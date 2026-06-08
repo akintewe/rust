@@ -107,11 +107,13 @@ fn main() -> Result<()> {
         }
 
         // build per-line hit count map from regions
-        // region format: [line_start, col_start, line_end, col_end, count, file_id, ...]
-        // use minimum count within each region — a line is only as covered as its least-hit region
+        // region format: [line_start, col_start, line_end, col_end, count, file_id, expanded_file_id, kind]
+        // kind: 0=code, 1=expansion, 2=skipped, 3=gap — only count kind=0 (real code regions)
         let mut region_counts: HashMap<usize, u64> = HashMap::new();
         for region in &func.regions {
-            if region.len() < 5 { continue; }
+            if region.len() < 8 { continue; }
+            let kind = region[7].as_u64().unwrap_or(0);
+            if kind != 0 { continue; }
             let rs = region[0].as_u64().unwrap_or(0) as usize;
             let re = region[2].as_u64().unwrap_or(0) as usize;
             let count = region[4].as_u64().unwrap_or(0);
