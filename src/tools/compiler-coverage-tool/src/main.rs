@@ -77,8 +77,8 @@ fn main() -> Result<()> {
     for func in &functions {
         let demangled = format!("{:#}", demangle(&func.name));
 
-        // only compiler crates
-        if !demangled.starts_with("rustc") {
+        // only compiler crates — match `rustc_foo::` at the start or after a leading `<`
+        if !demangled.starts_with("rustc") && !demangled.contains("<rustc") {
             continue;
         }
 
