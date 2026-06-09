@@ -174,6 +174,8 @@ impl<'a, Ty> TyAndLayout<'a, Ty> {
 
                 // There needs to be no padding.
                 if total != self.size {
+                    panic!("coverage check — line 177 hit");
+                    #[allow(unreachable_code)]
                     Err(Heterogeneous)
                 } else {
                     match result {
