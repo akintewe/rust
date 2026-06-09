@@ -109,7 +109,17 @@ fn main() -> Result<()> {
         // build per-line hit count map from regions
         // region format: [line_start, col_start, line_end, col_end, count, file_id, expanded_file_id, kind]
         // kind: 0=code, 1=expansion, 2=skipped, 3=gap — only count kind=0 (real code regions)
-        let mut region_counts: HashMap<usize, u64> = HashMap::new();
+        //
+        // For each line, use the innermost (tightest-enclosing) region's count.
+        // LLVM emits nested regions for branches — outer has the function/block count,
+        // inner has the branch-taken count. The innermost region (latest line_start,
+        // earliest line_end) is the most specific counter for what actually ran on
+        // that line. Taking the minimum instead incorrectly attributes outer counts
+        // to lines only reached by specific branches.
+        //
+        // Tightness = smallest line span; ties broken by latest line_start (higher rs).
+        // key: line → (span_lines, Reverse(rs), count)
+        let mut region_tightness: HashMap<usize, (usize, std::cmp::Reverse<usize>, u64)> = HashMap::new();
         for region in &func.regions {
             if region.len() < 8 { continue; }
             let kind = region[7].as_u64().unwrap_or(0);
@@ -117,11 +127,20 @@ fn main() -> Result<()> {
             let rs = region[0].as_u64().unwrap_or(0) as usize;
             let re = region[2].as_u64().unwrap_or(0) as usize;
             let count = region[4].as_u64().unwrap_or(0);
+            let span = re.saturating_sub(rs);
             for line in rs..=re {
-                let entry = region_counts.entry(line).or_insert(count);
-                if count < *entry { *entry = count; }
+                let key = (span, std::cmp::Reverse(rs), count);
+                let entry = region_tightness.entry(line).or_insert(key);
+                // prefer tighter (smaller span, then later start)
+                if (span, std::cmp::Reverse(rs)) < (entry.0, entry.1) {
+                    *entry = key;
+                }
             }
         }
+        let region_counts: HashMap<usize, u64> = region_tightness
+            .into_iter()
+            .map(|(line, (_, _, count))| (line, count))
+            .collect();
 
         // load source file
         if !source_cache.contains_key(&filename) {
