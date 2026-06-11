@@ -79,8 +79,6 @@ fn main() -> Result<()> {
 
         if func.filenames.iter().any(|f| f.contains("for_liveness")) {
             eprintln!("DEBUG for_liveness: demangled={}", &demangled[..demangled.len().min(120)]);
-            eprintln!("  starts_with rustc: {}", demangled.starts_with("rustc"));
-            eprintln!("  contains <rustc: {}", demangled.contains("<rustc"));
         }
 
         // only compiler crates — match `rustc_foo::` at the start or after a leading `<`
@@ -173,12 +171,22 @@ fn main() -> Result<()> {
     }
 
     eprintln!("{} compiler functions processed (before merging monomorphizations)", reports.len());
+    for r in &reports {
+        if r.filename.contains("for_liveness") {
+            eprintln!("REPORT for_liveness: line_start={} name={}", r.line_start, &r.demangled[..r.demangled.len().min(80)]);
+        }
+    }
 
     // merge monomorphizations — group by (filename, line_start), union line coverage
     // if any instantiation covered a line, that line counts as covered
     let reports = merge_monomorphizations(reports);
 
     eprintln!("{} functions after merging monomorphizations", reports.len());
+    for r in &reports {
+        if r.filename.contains("for_liveness") {
+            eprintln!("MERGED for_liveness: line_start={} name={}", r.line_start, &r.demangled[..r.demangled.len().min(80)]);
+        }
+    }
 
     // categorise based on summed counts
     let categorised: Vec<(&FunctionReport, FunctionCategory)> = reports.iter().map(|r| {
