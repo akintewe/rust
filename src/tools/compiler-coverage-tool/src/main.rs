@@ -77,10 +77,6 @@ fn main() -> Result<()> {
     for func in &functions {
         let demangled = format!("{:#}", demangle(&func.name));
 
-        if func.filenames.iter().any(|f| f.contains("for_liveness")) {
-            eprintln!("DEBUG for_liveness: demangled={}", &demangled[..demangled.len().min(120)]);
-        }
-
         // only compiler crates — match `rustc_foo::` at the start or after a leading `<`
         if !demangled.starts_with("rustc") && !demangled.contains("<rustc") {
             continue;
@@ -171,23 +167,12 @@ fn main() -> Result<()> {
     }
 
     eprintln!("{} compiler functions processed (before merging monomorphizations)", reports.len());
-    for r in &reports {
-        if r.filename.contains("for_liveness") {
-            eprintln!("REPORT for_liveness: line_start={} name={}", r.line_start, &r.demangled[..r.demangled.len().min(80)]);
-        }
-    }
 
     // merge monomorphizations — group by (filename, line_start), union line coverage
     // if any instantiation covered a line, that line counts as covered
     let reports = merge_monomorphizations(reports);
 
     eprintln!("{} functions after merging monomorphizations", reports.len());
-    for r in &reports {
-        if r.filename.contains("for_liveness") {
-            eprintln!("MERGED for_liveness: line_start={} name={}", r.line_start, &r.demangled[..r.demangled.len().min(120)]);
-        }
-    }
-    eprintln!("DEBUG: total after merge with for_liveness filename: {}", reports.iter().filter(|r| r.filename.contains("for_liveness")).count());
 
     // categorise based on summed counts
     let categorised: Vec<(&FunctionReport, FunctionCategory)> = reports.iter().map(|r| {
@@ -240,7 +225,7 @@ fn merge_monomorphizations(reports: Vec<FunctionReport>) -> Vec<FunctionReport> 
                 for (i, count) in report.line_counts.iter().enumerate() {
                     if let Some(existing_count) = existing.line_counts.get_mut(i) {
                         *existing_count = match (*existing_count, *count) {
-                            (Some(a), Some(b)) => Some(a + b),
+                            (Some(a), Some(b)) => Some(a.saturating_add(b)),
                             (Some(a), None) => Some(a),
                             (None, Some(b)) => Some(b),
                             (None, None) => None,
