@@ -77,6 +77,12 @@ fn main() -> Result<()> {
     for func in &functions {
         let demangled = format!("{:#}", demangle(&func.name));
 
+        if func.filenames.iter().any(|f| f.contains("for_liveness")) {
+            eprintln!("DEBUG for_liveness: demangled={}", &demangled[..demangled.len().min(120)]);
+            eprintln!("  starts_with rustc: {}", demangled.starts_with("rustc"));
+            eprintln!("  contains <rustc: {}", demangled.contains("<rustc"));
+        }
+
         // only compiler crates — match `rustc_foo::` at the start or after a leading `<`
         if !demangled.starts_with("rustc") && !demangled.contains("<rustc") {
             continue;
