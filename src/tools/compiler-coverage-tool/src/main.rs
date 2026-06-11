@@ -184,9 +184,10 @@ fn main() -> Result<()> {
     eprintln!("{} functions after merging monomorphizations", reports.len());
     for r in &reports {
         if r.filename.contains("for_liveness") {
-            eprintln!("MERGED for_liveness: line_start={} name={}", r.line_start, &r.demangled[..r.demangled.len().min(80)]);
+            eprintln!("MERGED for_liveness: line_start={} name={}", r.line_start, &r.demangled[..r.demangled.len().min(120)]);
         }
     }
+    eprintln!("DEBUG: total after merge with for_liveness filename: {}", reports.iter().filter(|r| r.filename.contains("for_liveness")).count());
 
     // categorise based on summed counts
     let categorised: Vec<(&FunctionReport, FunctionCategory)> = reports.iter().map(|r| {
