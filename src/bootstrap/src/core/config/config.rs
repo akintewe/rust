@@ -1309,8 +1309,8 @@ impl Config {
                 && src.join(".cargo/config.toml").exists(),
         );
         let verbose_tests = rust_verbose_tests.unwrap_or(exec_ctx.is_verbose());
-        let rust_coverage = flags_rust_coverage
-            || flags_paths.iter().any(|p| p.ends_with("compiler-coverage"));
+        let rust_coverage =
+            flags_rust_coverage || flags_paths.iter().any(|p| p.ends_with("compiler-coverage"));
 
         let record_failed_tests_path =
             out.join(build_record_failed_tests_path.unwrap_or_else(|| "failed-tests".to_string()));
@@ -1782,7 +1782,10 @@ impl Config {
 
     pub fn any_profiler_enabled(&self) -> bool {
         self.rust_coverage
-            || self.target_config.values().any(|t| matches!(&t.profiler, Some(p) if p.is_string_or_true()))
+            || self
+                .target_config
+                .values()
+                .any(|t| matches!(&t.profiler, Some(p) if p.is_string_or_true()))
             || self.profiler
     }
 

@@ -42,7 +42,9 @@ use crate::utils::helpers::{
     dylib_path, dylib_path_var, linker_args, linker_flags, t, target_supports_cranelift_backend,
     up_to_date,
 };
-use crate::utils::render_tests::{add_flags_and_try_run_tests, run_tests_with_callback, try_run_tests};
+use crate::utils::render_tests::{
+    add_flags_and_try_run_tests, run_tests_with_callback, try_run_tests,
+};
 use crate::{CLang, CodegenBackendKind, GitRepo, Mode, PathSet, TestTarget, envify};
 
 mod compiletest;
@@ -1022,8 +1024,6 @@ impl Step for CompilerCoverage {
         let profraw_dir = builder.out.join("coverage").join("profraws");
         t!(fs::create_dir_all(&profraw_dir));
 
-
-
         builder.info("Collecting compiler coverage (UI test suite)");
 
         builder.ensure(Compiletest {
@@ -1048,7 +1048,12 @@ impl Step for CompilerCoverage {
 /// the compiler being tested is instrumented, sets `LLVM_PROFILE_FILE` so each
 /// rustc invocation writes a `.profraw` file, and merges those profraws into a
 /// single `combined.profdata` after every passing test.
-fn coverage_run_tests(builder: &Builder<'_>, cmd: &mut BootstrapCommand, stream: bool, record_failed_tests: RecordFailedTests) -> bool {
+fn coverage_run_tests(
+    builder: &Builder<'_>,
+    cmd: &mut BootstrapCommand,
+    stream: bool,
+    record_failed_tests: RecordFailedTests,
+) -> bool {
     // Paths for coverage output — derived from builder.out the same way
     // CompilerCoverage::run sets them up.
     let profraw_dir = builder.out.join("coverage").join("profraws");
@@ -1106,7 +1111,13 @@ fn coverage_run_tests(builder: &Builder<'_>, cmd: &mut BootstrapCommand, stream:
         }
     };
 
-    run_tests_with_callback(builder, cmd, stream, record_failed_tests, Some(Box::new(on_test_finished)))
+    run_tests_with_callback(
+        builder,
+        cmd,
+        stream,
+        record_failed_tests,
+        Some(Box::new(on_test_finished)),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
