@@ -198,8 +198,13 @@ fn main() -> Result<()> {
 
     let html = render_html(&categorised, &source_cache, fully_count, partial_count, uncovered_count, total);
 
-    std::fs::write(&output_path, html)
-        .with_context(|| format!("failed to write {}", output_path.display()))?;
+    // Write to a temp file first, then rename atomically — so a crash mid-run
+    // never leaves a partial or stale output file behind.
+    let tmp_path = output_path.with_extension("html.tmp");
+    std::fs::write(&tmp_path, html)
+        .with_context(|| format!("failed to write {}", tmp_path.display()))?;
+    std::fs::rename(&tmp_path, &output_path)
+        .with_context(|| format!("failed to rename {} to {}", tmp_path.display(), output_path.display()))?;
 
     println!("written to {}", output_path.display());
     println!("  fully covered:    {} ({:.1}%)", fully_count, pct(fully_count, total));
