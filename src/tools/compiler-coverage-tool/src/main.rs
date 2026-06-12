@@ -153,8 +153,17 @@ fn main() -> Result<()> {
         }
 
         // store raw counts — None means LLVM doesn't track this line
+        // also treat lines containing only bug!/span_bug! as None (ignored) —
+        // these are intentionally unreachable and not real coverage gaps
+        let source_lines = source_cache.get(&filename).cloned().unwrap_or_default();
         let line_counts: Vec<Option<u64>> = (line_start..=line_end)
-            .map(|lineno| region_counts.get(&lineno).copied())
+            .map(|lineno| {
+                let src = source_lines.get(lineno.saturating_sub(1)).map(|s| s.trim()).unwrap_or("");
+                if src.starts_with("bug!") || src.starts_with("span_bug!") {
+                    return None;
+                }
+                region_counts.get(&lineno).copied()
+            })
             .collect();
 
         reports.push(FunctionReport {
