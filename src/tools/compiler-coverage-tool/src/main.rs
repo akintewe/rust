@@ -156,7 +156,7 @@ fn main() -> Result<()> {
         // also treat lines containing only bug!/span_bug! as None (ignored) —
         // these are intentionally unreachable and not real coverage gaps
         let source_lines = source_cache.get(&filename).cloned().unwrap_or_default();
-        let line_counts: Vec<Option<u64>> = (line_start..=line_end)
+        let mut line_counts: Vec<Option<u64>> = (line_start..=line_end)
             .map(|lineno| {
                 let src = source_lines.get(lineno.saturating_sub(1)).map(|s| s.trim()).unwrap_or("");
                 if src.starts_with("bug!") || src.starts_with("span_bug!") {
@@ -165,6 +165,25 @@ fn main() -> Result<()> {
                 region_counts.get(&lineno).copied()
             })
             .collect();
+
+        // if a closing brace line shows as uncovered but the preceding covered line
+        // in this function was covered, promote it — LLVM maps branch-not-taken
+        // counters to closing braces, making them red when the body above is green
+        let mut last_covered_count: Option<u64> = None;
+        for i in 0..line_counts.len() {
+            let lineno = line_start + i;
+            let src = source_lines.get(lineno.saturating_sub(1)).map(|s| s.trim()).unwrap_or("");
+            let is_closing = src == "}" || src == "};" || src == "}," || src == "});" || src == "})";
+            match line_counts[i] {
+                Some(c) if c > 0 => { last_covered_count = Some(c); }
+                Some(0) if is_closing => {
+                    if let Some(c) = last_covered_count {
+                        line_counts[i] = Some(c);
+                    }
+                }
+                _ => {}
+            }
+        }
 
         reports.push(FunctionReport {
             demangled,
