@@ -27,7 +27,7 @@ struct FunctionReport {
     demangled: String,
     filename: String,
     line_start: usize,
-    line_end: usize,
+    _line_end: usize,
     // per-line hit counts for lines line_start..=line_end
     // None = LLVM doesn't track this line (closing braces etc)
     // Some(n) = total hits across all merged monomorphizations
@@ -161,7 +161,7 @@ fn main() -> Result<()> {
             demangled,
             filename,
             line_start,
-            line_end,
+            _line_end: line_end,
             line_counts,
         });
     }
