@@ -304,7 +304,7 @@ fn crate_and_module(filename: &str) -> (String, String) {
         filename
     };
     let parts: Vec<&str> = rel.splitn(3, '/').collect();
-    let krate = parts.first().unwrap_or(&"").to_string(); // e.g. "rustc_middle"
+    let krate = parts.get(1).unwrap_or(&"").to_string(); // e.g. "rustc_middle"
     let path = parts.get(2).unwrap_or(&"").trim_end_matches(".rs");
     let module = path.replace('/', "::");
     (krate, module)
