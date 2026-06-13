@@ -386,7 +386,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; m
 .fn-row.expanded::before { transform: rotate(90deg); }
 .fn-row {
   display: grid; grid-template-columns: 1.2em 1fr auto;
-  align-items: center; padding: 0.18em 2em 0.18em 4em;
+  align-items: center; padding: 0.18em 2em;
   cursor: pointer;
   font-family: "SFMono-Regular", Consolas, monospace; font-size: 0.82em;
 }
