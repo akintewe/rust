@@ -355,26 +355,26 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; m
 .section-header.partial { background: #fd7e14; }
 .section-header.fully { background: #198754; }
 .fn-list { padding: 0 2em; }
-.fn-block { border: 1px solid #dee2e6; border-radius: 4px; margin: 0.5em 0; background: #fff; overflow: hidden; }
+.fn-block { margin: 0; }
 .fn-block.hidden { display: none; }
 details > summary {
-  padding: 0.7em 1em; cursor: pointer; list-style: none;
-  display: grid; grid-template-columns: 1fr auto;
-  align-items: start; gap: 1em; user-select: none;
+  padding: 0.3em 0; cursor: pointer; list-style: none;
+  display: flex; align-items: baseline; gap: 0.5em; user-select: none;
 }
-details > summary:hover { background: #f8f9fa; }
+details > summary:hover .fn-name { text-decoration: underline; }
 details > summary::-webkit-details-marker { display: none; }
-.fn-left { min-width: 0; }
-.fn-name { font-size: 0.9em; font-weight: 600; color: #e36d00; word-break: break-all; font-family: "SFMono-Regular", Consolas, monospace; }
-.fn-file { font-size: 0.8em; color: #6c757d; margin-top: 0.2em; font-family: "SFMono-Regular", Consolas, monospace; }
+details > summary::before { content: "▶"; font-size: 0.7em; color: #adb5bd; flex-shrink: 0; transition: transform 0.12s; }
+details[open] > summary::before { transform: rotate(90deg); }
+.fn-name { font-size: 0.9em; font-weight: 600; color: #e36d00; word-break: break-all; font-family: "SFMono-Regular", Consolas, monospace; flex: 1; }
 .fn-badge {
-  font-size: 0.8em; font-weight: 600; padding: 0.2em 0.6em;
-  border-radius: 3px; white-space: nowrap; font-family: inherit;
+  font-size: 0.8em; font-weight: 600; padding: 0.15em 0.5em;
+  border-radius: 3px; white-space: nowrap; font-family: inherit; flex-shrink: 0;
 }
 .badge-fully { background: #d1e7dd; color: #0a3622; }
 .badge-partial { background: #ffe5d0; color: #6c2a00; }
 .badge-uncovered { background: #f8d7da; color: #58151c; }
-.source-view { border-top: 1px solid #dee2e6; overflow-x: auto; background: #fdfdfd; }
+.fn-file { font-size: 0.8em; color: #6c757d; padding: 0.2em 0 0.4em 1.2em; font-family: "SFMono-Regular", Consolas, monospace; }
+.source-view { overflow-x: auto; background: #fdfdfd; border-left: 2px solid #dee2e6; margin: 0 0 0.5em 0.6em; }
 table.src { border-collapse: collapse; width: 100%; font-family: "SFMono-Regular", Consolas, monospace; font-size: 0.82em; }
 td.lineno {
   color: #adb5bd; text-align: right; padding: 1px 0.8em; min-width: 3.5em;
@@ -491,13 +491,8 @@ function onSearch(val) {{
             out.push_str(&format!(
                 r#"<div class="fn-block cat-{cat_class}">
 <details>
-<summary>
-  <div class="fn-left">
-    <div class="fn-name">{fn_name}</div>
-    <div class="fn-file">File: {short_file}:{line_start}</div>
-  </div>
-  <span class="fn-badge {badge_class}">{badge_text}</span>
-</summary>
+<summary><span class="fn-name">{fn_name}</span><span class="fn-badge {badge_class}">{badge_text}</span></summary>
+<div class="fn-file">{short_file}:{line_start}</div>
 <div class="source-view"><table class="src">
 "#,
                 cat_class = cat_class,
