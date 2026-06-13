@@ -408,6 +408,13 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; m
 .section-header.uncovered { background: #dc3545; }
 .section-header.partial { background: #fd7e14; }
 .section-header.fully { background: #198754; }
+.crate-group { margin: 0; }
+.crate-group > summary { display: flex; align-items: center; gap: 0.4em; list-style: none; cursor: pointer; padding: 0.4em 2em; background: #f1f3f5; border-bottom: 1px solid #dee2e6; font-weight: 600; font-size: 0.88em; user-select: none; }
+.crate-group > summary:hover { background: #e9ecef; }
+.crate-group > summary::-webkit-details-marker { display: none; }
+.crate-group > summary::before { content: "▶"; font-size: 0.7em; color: #6c757d; transition: transform 0.12s; }
+.crate-group[open] > summary::before { transform: rotate(90deg); }
+.crate-count { font-weight: normal; color: #6c757d; font-size: 0.9em; }
 .fn-list { padding: 0 2em; }
 .fn-block { margin: 0; }
 .fn-block.hidden { display: none; }
@@ -517,15 +524,41 @@ function onSearch(val) {{
 
     for (cat_variant, cat_class, label, count) in &order {
         out.push_str(&format!(
-            "<div class=\"section-header {cat_class}\">{label} ({count})</div>\n<div class=\"fn-list\">\n",
+            "<div class=\"section-header {cat_class}\">{label} ({count})</div>\n",
             cat_class = cat_class,
             label = label,
             count = count,
         ));
 
-        for (report, cat) in categorised {
-            if cat != cat_variant { continue; }
+        // group functions in this section by crate name
+        let section_fns: Vec<&(&FunctionReport, FunctionCategory)> = categorised
+            .iter()
+            .filter(|(_, cat)| cat == cat_variant)
+            .collect();
 
+        // collect crate names in order of first appearance
+        let mut seen_crates: Vec<String> = vec![];
+        for (report, _) in &section_fns {
+            let krate = crate_name(&report.filename);
+            if !seen_crates.contains(&krate) {
+                seen_crates.push(krate);
+            }
+        }
+
+        for krate in &seen_crates {
+            let krate_fns: Vec<&&(&FunctionReport, FunctionCategory)> = section_fns
+                .iter()
+                .filter(|(r, _)| &crate_name(&r.filename) == krate)
+                .collect();
+            let krate_count = krate_fns.len();
+
+            out.push_str(&format!(
+                "<details class=\"crate-group\"><summary class=\"crate-header\">{krate} <span class=\"crate-count\">({krate_count})</span></summary>\n<div class=\"fn-list\">\n",
+                krate = escape(krate),
+                krate_count = krate_count,
+            ));
+
+        for (report, _) in &krate_fns {
             let short_filename = if let Some(idx) = report.filename.find("/compiler/") {
                 &report.filename[idx + 1..]
             } else {
@@ -582,11 +615,22 @@ function onSearch(val) {{
             out.push_str("</table></div></details></div>\n");
         }
 
-        out.push_str("</div>\n");
+        out.push_str("</div></details>\n"); // close crate-group
+        }
     }
 
     out.push_str("</body></html>\n");
     out
+}
+
+fn crate_name(filename: &str) -> String {
+    // "/.../rust/compiler/rustc_abi/src/lib.rs" -> "rustc_abi"
+    if let Some(idx) = filename.find("/compiler/") {
+        let after = &filename[idx + "/compiler/".len()..];
+        let krate = after.split('/').next().unwrap_or("unknown");
+        return krate.to_string();
+    }
+    "unknown".to_string()
 }
 
 fn pct(n: usize, total: usize) -> f64 {
