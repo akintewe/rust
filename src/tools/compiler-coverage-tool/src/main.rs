@@ -385,19 +385,15 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; m
 .fn-row::before { content: "▶"; font-size: 0.65em; color: #adb5bd; transition: transform 0.15s; display: inline-block; }
 .fn-row.expanded::before { transform: rotate(90deg); }
 .fn-row {
-  display: grid; grid-template-columns: 1.2em 1fr auto;
-  align-items: center; padding: 0.18em 2em;
+  display: flex; align-items: center; gap: 0.5em;
+  padding: 0.18em 2em;
   cursor: pointer;
   font-family: "SFMono-Regular", Consolas, monospace; font-size: 0.82em;
 }
 .fn-row:hover { background: #f0f4ff; }
 .fn-row.hidden { display: none; }
-.fn-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-.dot-fully { background: #198754; }
-.dot-partial { background: #fd7e14; }
-.dot-uncovered { background: #dc3545; }
-.fn-name { color: #212529; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 0.5em; }
-.fn-pct { font-size: 0.8em; color: #6c757d; white-space: nowrap; }
+.fn-name { color: #212529; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.fn-pct { font-size: 0.8em; white-space: nowrap; margin-left: auto; }
 .fn-pct.pct-fully { color: #198754; }
 .fn-pct.pct-partial { color: #fd7e14; }
 .fn-pct.pct-uncovered { color: #dc3545; }
@@ -546,11 +542,6 @@ function toggleModule(id) {{
                     FunctionCategory::PartiallyCovered => "partial",
                     FunctionCategory::FullyUncovered => "uncovered",
                 };
-                let dot_class = match cat {
-                    FunctionCategory::FullyCovered => "dot-fully",
-                    FunctionCategory::PartiallyCovered => "dot-partial",
-                    FunctionCategory::FullyUncovered => "dot-uncovered",
-                };
                 let pct_class = match cat {
                     FunctionCategory::FullyCovered => "pct-fully",
                     FunctionCategory::PartiallyCovered => "pct-partial",
@@ -571,12 +562,11 @@ function toggleModule(id) {{
                 };
 
                 out.push_str(&format!(
-                    r#"<div class="fn-row cat-{cat_str}" id="fn-row-{fid}" data-cat="{cat_str}" data-name="{name_lower}" data-file="{file_lower}" onclick="toggleFn({fid})"><span class="fn-dot {dot_class}"></span><span class="fn-name" title="{fn_name_full}">{fn_name}</span><span class="fn-pct {pct_class}">{pct_str}</span></div>"#,
+                    r#"<div class="fn-row cat-{cat_str}" id="fn-row-{fid}" data-cat="{cat_str}" data-name="{name_lower}" data-file="{file_lower}" onclick="toggleFn({fid})"><span class="fn-name" title="{fn_name_full}">{fn_name}</span><span class="fn-pct {pct_class}">{pct_str}</span></div>"#,
                     cat_str = cat_str,
                     name_lower = escape(&report.demangled.to_lowercase()),
                     file_lower = escape(&short_file.to_lowercase()),
                     fid = fn_id,
-                    dot_class = dot_class,
                     fn_name_full = escape(&report.demangled),
                     fn_name = escape(&report.demangled),
                     pct_class = pct_class,
