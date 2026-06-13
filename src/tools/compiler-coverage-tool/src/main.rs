@@ -185,12 +185,13 @@ fn main() -> Result<()> {
             }
         }
 
-        // if an ignored line (None) is followed by an uncovered line (Some(0)),
-        // mark it as uncovered too — match arm patterns are grey but if the arm
-        // body is red, the pattern should also be red
+        // if an ignored line (None) is immediately followed (within 3 lines) by
+        // an uncovered line (Some(0)), mark it as uncovered too — match arm
+        // patterns are grey but if the arm body is red, the pattern should be red too
         for i in 0..line_counts.len() {
             if line_counts[i].is_none() {
-                let next = line_counts[i+1..].iter().find(|c| c.is_some());
+                let window = &line_counts[i+1..std::cmp::min(i+4, line_counts.len())];
+                let next = window.iter().find(|c| c.is_some());
                 if next == Some(&Some(0)) {
                     line_counts[i] = Some(0);
                 }
