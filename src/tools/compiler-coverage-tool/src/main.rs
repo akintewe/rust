@@ -513,7 +513,7 @@ function toggleModule(id) {{
         let crate_pct = pct(crate_covered, crate_total);
 
         out.push_str(&format!(
-            r#"<div class="crate-block"><div class="crate-header" id="crate-hdr-{cid}" onclick="toggleCrate({cid})">{krate} <span style="font-weight:normal;color:#6c757d;font-size:0.85em">({crate_covered}/{crate_total} fully covered, {crate_pct:.0}%)</span></div><div class="crate-fns" id="crate-fns-{cid}">"#,
+            r#"<div class="crate-block"><div class="crate-header collapsed" id="crate-hdr-{cid}" onclick="toggleCrate({cid})">{krate} <span style="font-weight:normal;color:#6c757d;font-size:0.85em">({crate_covered}/{crate_total} fully covered, {crate_pct:.0}%)</span></div><div class="crate-fns collapsed" id="crate-fns-{cid}">"#,
             cid = crate_id,
             krate = escape(krate),
             crate_covered = crate_covered,
@@ -528,7 +528,7 @@ function toggleModule(id) {{
             let mod_pct = pct(mod_covered, mod_total);
 
             out.push_str(&format!(
-                r#"<div class="module-header" id="mod-hdr-{mid}" onclick="toggleModule({mid})">{module} <span style="font-weight:normal;color:#adb5bd">({mod_covered}/{mod_total}, {mod_pct:.0}%)</span></div><div class="module-fns" id="mod-fns-{mid}">"#,
+                r#"<div class="module-header collapsed" id="mod-hdr-{mid}" onclick="toggleModule({mid})">{module} <span style="font-weight:normal;color:#adb5bd">({mod_covered}/{mod_total}, {mod_pct:.0}%)</span></div><div class="module-fns collapsed" id="mod-fns-{mid}">"#,
                 mid = mod_id,
                 module = escape(module),
                 mod_covered = mod_covered,
