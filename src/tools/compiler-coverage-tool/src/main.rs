@@ -368,16 +368,22 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; m
   display: flex; align-items: center; gap: 0.5em;
 }
 .crate-header:hover { background: #dee2e6; }
+.crate-header::before { content: "▶"; font-size: 0.75em; transition: transform 0.15s; display: inline-block; }
+.crate-header:not(.collapsed)::before { transform: rotate(90deg); }
 .crate-fns { display: block; }
 .crate-fns.collapsed { display: none; }
 .module-header {
   padding: 0.3em 2em 0.3em 3em; background: #f8f9fa; border-bottom: 1px solid #f0f0f0;
   font-size: 0.82em; color: #6c757d; font-family: "SFMono-Regular", Consolas, monospace;
-  cursor: pointer; user-select: none;
+  cursor: pointer; user-select: none; display: flex; align-items: center; gap: 0.4em;
 }
 .module-header:hover { background: #f0f0f0; }
+.module-header::before { content: "▶"; font-size: 0.7em; transition: transform 0.15s; display: inline-block; }
+.module-header:not(.collapsed)::before { transform: rotate(90deg); }
 .module-fns { display: block; }
 .module-fns.collapsed { display: none; }
+.fn-row::before { content: "▶"; font-size: 0.65em; color: #adb5bd; transition: transform 0.15s; display: inline-block; }
+.fn-row.expanded::before { transform: rotate(90deg); }
 .fn-row {
   display: grid; grid-template-columns: 1.2em 1fr auto;
   align-items: center; padding: 0.18em 2em 0.18em 4em;
@@ -464,18 +470,24 @@ function onSearch(val) {{
 }}
 
 function toggleFn(id) {{
+  var row = document.getElementById('fn-row-' + id);
   var src = document.getElementById('src-' + id);
   if (src) src.classList.toggle('open');
+  if (row) row.classList.toggle('expanded');
 }}
 
 function toggleCrate(id) {{
-  var el = document.getElementById('crate-fns-' + id);
-  if (el) el.classList.toggle('collapsed');
+  var fns = document.getElementById('crate-fns-' + id);
+  var hdr = document.getElementById('crate-hdr-' + id);
+  if (fns) fns.classList.toggle('collapsed');
+  if (hdr) hdr.classList.toggle('collapsed');
 }}
 
 function toggleModule(id) {{
-  var el = document.getElementById('mod-fns-' + id);
-  if (el) el.classList.toggle('collapsed');
+  var fns = document.getElementById('mod-fns-' + id);
+  var hdr = document.getElementById('mod-hdr-' + id);
+  if (fns) fns.classList.toggle('collapsed');
+  if (hdr) hdr.classList.toggle('collapsed');
 }}
 </script>
 "#,
@@ -505,7 +517,7 @@ function toggleModule(id) {{
         let crate_pct = pct(crate_covered, crate_total);
 
         out.push_str(&format!(
-            r#"<div class="crate-block"><div class="crate-header" onclick="toggleCrate({cid})">▾ {krate} <span style="font-weight:normal;color:#6c757d;font-size:0.85em">({crate_covered}/{crate_total} fully covered, {crate_pct:.0}%)</span></div><div class="crate-fns" id="crate-fns-{cid}">"#,
+            r#"<div class="crate-block"><div class="crate-header" id="crate-hdr-{cid}" onclick="toggleCrate({cid})">{krate} <span style="font-weight:normal;color:#6c757d;font-size:0.85em">({crate_covered}/{crate_total} fully covered, {crate_pct:.0}%)</span></div><div class="crate-fns" id="crate-fns-{cid}">"#,
             cid = crate_id,
             krate = escape(krate),
             crate_covered = crate_covered,
@@ -520,7 +532,7 @@ function toggleModule(id) {{
             let mod_pct = pct(mod_covered, mod_total);
 
             out.push_str(&format!(
-                r#"<div class="module-header" onclick="toggleModule({mid})">▾ {module} <span style="font-weight:normal;color:#adb5bd">({mod_covered}/{mod_total}, {mod_pct:.0}%)</span></div><div class="module-fns" id="mod-fns-{mid}">"#,
+                r#"<div class="module-header" id="mod-hdr-{mid}" onclick="toggleModule({mid})">{module} <span style="font-weight:normal;color:#adb5bd">({mod_covered}/{mod_total}, {mod_pct:.0}%)</span></div><div class="module-fns" id="mod-fns-{mid}">"#,
                 mid = mod_id,
                 module = escape(module),
                 mod_covered = mod_covered,
@@ -559,7 +571,7 @@ function toggleModule(id) {{
                 };
 
                 out.push_str(&format!(
-                    r#"<div class="fn-row cat-{cat_str}" data-cat="{cat_str}" data-name="{name_lower}" data-file="{file_lower}" onclick="toggleFn({fid})"><span class="fn-dot {dot_class}"></span><span class="fn-name" title="{fn_name_full}">{fn_name}</span><span class="fn-pct {pct_class}">{pct_str}</span></div>"#,
+                    r#"<div class="fn-row cat-{cat_str}" id="fn-row-{fid}" data-cat="{cat_str}" data-name="{name_lower}" data-file="{file_lower}" onclick="toggleFn({fid})"><span class="fn-dot {dot_class}"></span><span class="fn-name" title="{fn_name_full}">{fn_name}</span><span class="fn-pct {pct_class}">{pct_str}</span></div>"#,
                     cat_str = cat_str,
                     name_lower = escape(&report.demangled.to_lowercase()),
                     file_lower = escape(&short_file.to_lowercase()),
