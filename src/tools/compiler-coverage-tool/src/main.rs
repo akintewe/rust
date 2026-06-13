@@ -206,6 +206,9 @@ fn main() -> Result<()> {
 
     eprintln!("{} functions after merging monomorphizations", reports.len());
 
+    let reports = merge_closures(reports);
+    eprintln!("{} functions after merging closures into parents", reports.len());
+
     // categorise based on summed counts
     let categorised: Vec<(&FunctionReport, FunctionCategory)> = reports.iter().map(|r| {
         let tracked: Vec<u64> = r.line_counts.iter().filter_map(|c| *c).collect();
@@ -272,6 +275,57 @@ fn merge_monomorphizations(reports: Vec<FunctionReport>) -> Vec<FunctionReport> 
                 // prefer shorter name — less generic type noise
                 if report.demangled.len() < existing.demangled.len() {
                     existing.demangled = report.demangled;
+                }
+            }
+        }
+    }
+
+    groups.into_values().collect()
+}
+
+fn closure_parent(name: &str) -> Option<&str> {
+    // strip the last "::{closure#N}" (or "::{closure_env#N}") suffix
+    // e.g. "foo::{closure#0}" -> "foo"
+    //      "foo::{closure#0}::{closure#1}" -> "foo::{closure#0}"
+    let idx = name.rfind("::{closure")?;
+    Some(&name[..idx])
+}
+
+fn merge_closures(reports: Vec<FunctionReport>) -> Vec<FunctionReport> {
+    // group by (filename, parent_name) — closures fold into their parent
+    // key: (filename, canonical_name) where canonical_name strips closure suffixes
+    let mut groups: std::collections::BTreeMap<(String, String), FunctionReport> =
+        std::collections::BTreeMap::new();
+
+    for report in reports {
+        // walk up the closure chain to find the root parent name
+        let mut root = report.demangled.as_str();
+        while let Some(parent) = closure_parent(root) {
+            root = parent;
+        }
+        let key = (report.filename.clone(), root.to_string());
+
+        let root_owned = root.to_string();
+        match groups.get_mut(&key) {
+            None => {
+                let mut r = report;
+                r.demangled = root_owned;
+                groups.insert(key, r);
+            }
+            Some(existing) => {
+                // sum counts just like mono merging
+                for (i, count) in report.line_counts.iter().enumerate() {
+                    if let Some(existing_count) = existing.line_counts.get_mut(i) {
+                        *existing_count = match (*existing_count, *count) {
+                            (Some(a), Some(b)) => Some(a.saturating_add(b)),
+                            (Some(a), None) => Some(a),
+                            (None, Some(b)) => Some(b),
+                            (None, None) => None,
+                        };
+                    } else if *count != None {
+                        // closure covers lines beyond the parent's span — extend
+                        existing.line_counts.push(*count);
+                    }
                 }
             }
         }
