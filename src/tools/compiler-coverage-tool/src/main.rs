@@ -379,13 +379,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; m
 .module-fns { display: block; }
 .module-fns.collapsed { display: none; }
 .fn-row {
-  display: grid; grid-template-columns: 1.5em 1fr auto;
-  align-items: center; padding: 0.25em 2em 0.25em 4em;
-  border-bottom: 1px solid #f5f5f5; cursor: pointer;
+  display: grid; grid-template-columns: 1.2em 1fr auto;
+  align-items: center; padding: 0.18em 2em 0.18em 4em;
+  cursor: pointer;
   font-family: "SFMono-Regular", Consolas, monospace; font-size: 0.82em;
-  background: #fff;
 }
-.fn-row:hover { background: #f8f9fa; }
+.fn-row:hover { background: #f0f4ff; }
 .fn-row.hidden { display: none; }
 .fn-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 .dot-fully { background: #198754; }
