@@ -396,7 +396,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; m
 .dot-fully { background: #198754; }
 .dot-partial { background: #fd7e14; }
 .dot-uncovered { background: #dc3545; }
-.fn-name { color: #212529; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 0.5em; }
+.fn-name { color: #e36d00; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 0.5em; }
 .fn-pct { font-size: 0.8em; color: #6c757d; white-space: nowrap; }
 .fn-pct.pct-fully { color: #198754; }
 .fn-pct.pct-partial { color: #fd7e14; }
@@ -571,7 +571,7 @@ function toggleModule(id) {{
                 };
 
                 out.push_str(&format!(
-                    r#"<div class="fn-row cat-{cat_str}" id="fn-row-{fid}" data-cat="{cat_str}" data-name="{name_lower}" data-file="{file_lower}" onclick="toggleFn({fid})"><span class="fn-dot {dot_class}"></span><span class="fn-name" title="{fn_name_full}">{fn_name}</span><span class="fn-pct {pct_class}">{pct_str}</span></div>"#,
+                    r#"<div class="fn-row expanded cat-{cat_str}" id="fn-row-{fid}" data-cat="{cat_str}" data-name="{name_lower}" data-file="{file_lower}" onclick="toggleFn({fid})"><span class="fn-dot {dot_class}"></span><span class="fn-name" title="{fn_name_full}">{fn_name}</span><span class="fn-pct {pct_class}">{pct_str}</span></div>"#,
                     cat_str = cat_str,
                     name_lower = escape(&report.demangled.to_lowercase()),
                     file_lower = escape(&short_file.to_lowercase()),
@@ -584,7 +584,7 @@ function toggleModule(id) {{
                 ));
 
                 // source view (hidden by default, toggled on click)
-                out.push_str(&format!(r#"<div class="source-view" id="src-{fid}"><table class="src">"#, fid = fn_id));
+                out.push_str(&format!(r#"<div class="source-view open" id="src-{fid}"><table class="src">"#, fid = fn_id));
 
                 let source_lines = source_cache.get(&report.filename);
                 for (i, count) in report.line_counts.iter().enumerate() {
