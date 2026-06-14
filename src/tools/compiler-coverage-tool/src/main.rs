@@ -481,6 +481,11 @@ function applyFilters() {{
     el.classList.toggle('hidden', hide);
     if (!hide) visible++;
   }});
+  // hide crate groups that have no visible fn-blocks, show section-headers accordingly
+  document.querySelectorAll('.crate-group').forEach(el => {{
+    var hasVisible = el.querySelector('.fn-block:not(.hidden)');
+    el.style.display = hasVisible ? '' : 'none';
+  }});
   document.querySelectorAll('.section-header').forEach(el => {{
     if (currentCat === 'all') {{ el.style.display = ''; }}
     else {{ el.style.display = el.classList.contains(currentCat) ? '' : 'none'; }}
