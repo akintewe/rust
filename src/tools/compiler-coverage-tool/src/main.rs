@@ -200,8 +200,7 @@ fn main() -> Result<()> {
 
     eprintln!("{} compiler functions processed (before merging monomorphizations)", reports.len());
 
-    // merge monomorphizations — group by (filename, line_start), union line coverage
-    // if any instantiation covered a line, that line counts as covered
+    // group by (filename, line_start) and sum hit counts across monomorphizations
     let reports = merge_monomorphizations(reports);
 
     eprintln!("{} functions after merging monomorphizations", reports.len());
@@ -415,6 +414,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; m
 .crate-group > summary::before { content: "▶"; font-size: 0.7em; color: #6c757d; transition: transform 0.12s; }
 .crate-group[open] > summary::before { transform: rotate(90deg); }
 .crate-count { font-weight: normal; color: #6c757d; font-size: 0.9em; }
+.file-group { margin: 0; }
+.file-group > summary { display: flex; align-items: center; gap: 0.4em; list-style: none; cursor: pointer; padding: 0.3em 2em 0.3em 3.5em; background: #f8f9fa; border-bottom: 1px solid #eee; font-size: 0.83em; color: #495057; font-family: "SFMono-Regular", Consolas, monospace; user-select: none; }
+.file-group > summary:hover { background: #f0f0f0; }
+.file-group > summary::-webkit-details-marker { display: none; }
+.file-group > summary::before { content: "▶"; font-size: 0.65em; color: #adb5bd; transition: transform 0.12s; }
+.file-group[open] > summary::before { transform: rotate(90deg); }
 .fn-list { padding: 0 2em; }
 .fn-block { margin: 0; }
 .fn-block.hidden { display: none; }
@@ -481,10 +486,11 @@ function applyFilters() {{
     el.classList.toggle('hidden', hide);
     if (!hide) visible++;
   }});
-  // hide crate groups that have no visible fn-blocks, show section-headers accordingly
+  document.querySelectorAll('.file-group').forEach(el => {{
+    el.style.display = el.querySelector('.fn-block:not(.hidden)') ? '' : 'none';
+  }});
   document.querySelectorAll('.crate-group').forEach(el => {{
-    var hasVisible = el.querySelector('.fn-block:not(.hidden)');
-    el.style.display = hasVisible ? '' : 'none';
+    el.style.display = el.querySelector('.fn-block:not(.hidden)') ? '' : 'none';
   }});
   document.querySelectorAll('.section-header').forEach(el => {{
     if (currentCat === 'all') {{ el.style.display = ''; }}
@@ -535,13 +541,11 @@ function onSearch(val) {{
             count = count,
         ));
 
-        // group functions in this section by crate name
         let section_fns: Vec<&(&FunctionReport, FunctionCategory)> = categorised
             .iter()
             .filter(|(_, cat)| cat == cat_variant)
             .collect();
 
-        // collect crate names in order of first appearance
         let mut seen_crates: Vec<String> = vec![];
         for (report, _) in &section_fns {
             let krate = crate_name(&report.filename);
@@ -558,12 +562,32 @@ function onSearch(val) {{
             let krate_count = krate_fns.len();
 
             out.push_str(&format!(
-                "<details class=\"crate-group\"><summary class=\"crate-header\">{krate} <span class=\"crate-count\">({krate_count})</span></summary>\n<div class=\"fn-list\">\n",
+                "<details class=\"crate-group\"><summary class=\"crate-header\">{krate} <span class=\"crate-count\">({krate_count})</span></summary>\n",
                 krate = escape(krate),
                 krate_count = krate_count,
             ));
 
-        for (report, _) in &krate_fns {
+            // nest by file path within the crate
+            let mut seen_files: Vec<String> = vec![];
+            for (report, _) in &krate_fns {
+                let f = file_path_in_crate(&report.filename);
+                if !seen_files.contains(&f) { seen_files.push(f); }
+            }
+
+            for file in &seen_files {
+                let file_fns: Vec<&&&(&FunctionReport, FunctionCategory)> = krate_fns
+                    .iter()
+                    .filter(|(r, _)| &file_path_in_crate(&r.filename) == file)
+                    .collect();
+                let file_count = file_fns.len();
+
+                out.push_str(&format!(
+                    "<details class=\"file-group\"><summary class=\"file-header\">{file} <span class=\"crate-count\">({file_count})</span></summary>\n<div class=\"fn-list\">\n",
+                    file = escape(file),
+                    file_count = file_count,
+                ));
+
+        for (report, _) in &file_fns {
             let short_filename = if let Some(idx) = report.filename.find("/compiler/") {
                 &report.filename[idx + 1..]
             } else {
@@ -620,7 +644,10 @@ function onSearch(val) {{
             out.push_str("</table></div></details></div>\n");
         }
 
-        out.push_str("</div></details>\n"); // close crate-group
+            out.push_str("</div></details>\n"); // close file-group
+            }
+
+        out.push_str("</details>\n"); // close crate-group
         }
     }
 
@@ -629,13 +656,22 @@ function onSearch(val) {{
 }
 
 fn crate_name(filename: &str) -> String {
-    // "/.../rust/compiler/rustc_abi/src/lib.rs" -> "rustc_abi"
     if let Some(idx) = filename.find("/compiler/") {
         let after = &filename[idx + "/compiler/".len()..];
-        let krate = after.split('/').next().unwrap_or("unknown");
-        return krate.to_string();
+        return after.split('/').next().unwrap_or("unknown").to_string();
     }
     "unknown".to_string()
+}
+
+fn file_path_in_crate(filename: &str) -> String {
+    // "/.../compiler/rustc_abi/src/lib.rs" -> "src/lib.rs"
+    if let Some(idx) = filename.find("/compiler/") {
+        let after = &filename[idx + "/compiler/".len()..];
+        if let Some(slash) = after.find('/') {
+            return after[slash + 1..].to_string();
+        }
+    }
+    filename.to_string()
 }
 
 fn pct(n: usize, total: usize) -> f64 {
