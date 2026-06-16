@@ -42,7 +42,9 @@ use crate::utils::helpers::{
     dylib_path, dylib_path_var, linker_args, linker_flags, t, target_supports_cranelift_backend,
     up_to_date,
 };
-use crate::utils::render_tests::{add_flags_and_try_run_tests, run_tests_with_callback, try_run_tests};
+use crate::utils::render_tests::{
+    add_flags_and_try_run_tests, run_tests_with_callback, try_run_tests,
+};
 use crate::{CLang, CodegenBackendKind, GitRepo, Mode, PathSet, TestTarget, envify};
 
 mod compiletest;
@@ -1022,8 +1024,6 @@ impl Step for CompilerCoverage {
         let profraw_dir = builder.out.join("coverage").join("profraws");
         t!(fs::create_dir_all(&profraw_dir));
 
-
-
         builder.info("Collecting compiler coverage (UI test suite)");
 
         builder.ensure(Compiletest {
@@ -1048,15 +1048,17 @@ impl Step for CompilerCoverage {
 /// the compiler being tested is instrumented, sets `LLVM_PROFILE_FILE` so each
 /// rustc invocation writes a `.profraw` file, and merges those profraws into a
 /// single `combined.profdata` after every passing test.
-fn coverage_run_tests(builder: &Builder<'_>, cmd: &mut BootstrapCommand, stream: bool, record_failed_tests: RecordFailedTests) -> bool {
-    // Paths for coverage output — derived from builder.out the same way
-    // CompilerCoverage::run sets them up.
+fn coverage_run_tests(
+    builder: &Builder<'_>,
+    cmd: &mut BootstrapCommand,
+    stream: bool,
+    record_failed_tests: RecordFailedTests,
+) -> bool {
     let profraw_dir = builder.out.join("coverage").join("profraws");
     let profdata_path = builder.out.join("coverage").join("combined.profdata");
     let llvm_profdata =
         builder.llvm_out(builder.config.host_target).join("bin").join("llvm-profdata");
 
-    // Tell the instrumented rustc where to write its profraw files.
     cmd.env("LLVM_PROFILE_FILE", profraw_dir.join("rustc_%m_%p.profraw").as_os_str());
 
     // Merge profraws after each passing test.
@@ -1077,7 +1079,6 @@ fn coverage_run_tests(builder: &Builder<'_>, cmd: &mut BootstrapCommand, stream:
             return;
         }
 
-        // Merge all pending profraws into combined.profdata, then delete them.
         let mut merge = std::process::Command::new(&llvm_profdata);
         merge.arg("merge").arg("--sparse").arg("-o").arg(&profdata_path);
         if profdata_path.exists() {
@@ -1106,7 +1107,13 @@ fn coverage_run_tests(builder: &Builder<'_>, cmd: &mut BootstrapCommand, stream:
         }
     };
 
-    run_tests_with_callback(builder, cmd, stream, record_failed_tests, Some(Box::new(on_test_finished)))
+    run_tests_with_callback(
+        builder,
+        cmd,
+        stream,
+        record_failed_tests,
+        Some(Box::new(on_test_finished)),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

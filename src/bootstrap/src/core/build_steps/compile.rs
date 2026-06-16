@@ -1198,12 +1198,15 @@ impl Step for Rustc {
         // away after the fact.
         if builder.config.rust_debuginfo_level_rustc == DebuginfoLevel::None
             && builder.config.rust_debuginfo_level_tools == DebuginfoLevel::None
+            && !builder.config.rust_coverage
         {
             let rustc_driver = target_root_dir.join("librustc_driver.so");
             strip_debug(builder, target, &rustc_driver);
         }
 
-        if builder.config.rust_debuginfo_level_rustc == DebuginfoLevel::None {
+        if builder.config.rust_debuginfo_level_rustc == DebuginfoLevel::None
+            && !builder.config.rust_coverage
+        {
             // Due to LTO a lot of debug info from C++ dependencies such as jemalloc can make it into
             // our final binaries
             strip_debug(builder, target, &target_root_dir.join("rustc-main"));
