@@ -43,7 +43,7 @@ use crate::utils::helpers::{
     up_to_date,
 };
 use crate::utils::render_tests::{
-    add_flags_and_try_run_tests, run_tests_with_callback, try_run_tests,
+    Renderer, add_flags_and_try_run_tests, try_run_tests,
 };
 use crate::{CLang, CodegenBackendKind, GitRepo, Mode, PathSet, TestTarget, envify};
 
@@ -1037,6 +1037,32 @@ impl Step for CompilerCoverage {
             run_tests_fn: coverage_run_tests,
         });
 
+        builder.info("Collecting compiler coverage (incremental test suite)");
+
+        builder.ensure(Compiletest {
+            test_compiler: compiler,
+            target,
+            mode: CompiletestMode::Incremental,
+            suite: "incremental",
+            path: "tests/incremental",
+            compare_mode: None,
+            instrument: true,
+            run_tests_fn: coverage_run_tests,
+        });
+
+        builder.info("Collecting compiler coverage (run-make test suite)");
+
+        builder.ensure(Compiletest {
+            test_compiler: compiler,
+            target,
+            mode: CompiletestMode::RunMake,
+            suite: "run-make",
+            path: "tests/run-make",
+            compare_mode: None,
+            instrument: true,
+            run_tests_fn: coverage_run_tests,
+        });
+
         let profdata_path = builder.out.join("coverage").join("combined.profdata");
         builder.info(&format!("Coverage profdata written to {}", profdata_path.display()));
     }
@@ -1061,8 +1087,11 @@ fn coverage_run_tests(
 
     cmd.env("LLVM_PROFILE_FILE", profraw_dir.join("rustc_%m_%p.profraw").as_os_str());
 
-    // Merge profraws after each passing test.
-    let on_test_finished = move |_test_name: &str| {
+    // Merge profraws after each passing test. The callback only fires for passing
+    // tests (not ignored or failed ones) — see render_tests.rs. A passing test that
+    // produces no profraw files is a bug: the instrumented rustc should always write
+    // at least one profraw when it runs.
+    let on_test_finished = move |test_name: &str| {
         let profraws: Vec<_> = match fs::read_dir(&profraw_dir) {
             Ok(entries) => entries
                 .filter_map(|e| e.ok())
@@ -1076,6 +1105,10 @@ fn coverage_run_tests(
         };
 
         if profraws.is_empty() {
+            eprintln!(
+                "coverage: test `{test_name}` passed but wrote no profraw files; \
+                 the instrumented rustc may not have run"
+            );
             return;
         }
 
@@ -1107,13 +1140,41 @@ fn coverage_run_tests(
         }
     };
 
-    run_tests_with_callback(
+    builder.do_if_verbose(|| println!("running: {cmd:?}"));
+
+    let Some(mut streaming_command) = cmd.stream_capture_stdout(&builder.config.exec_ctx) else {
+        return true;
+    };
+
+    let mut renderer = Renderer::new(
+        streaming_command.stdout.take().unwrap(),
         builder,
-        cmd,
-        stream,
         record_failed_tests,
-        Some(Box::new(on_test_finished)),
     )
+    .with_on_test_finished(Box::new(on_test_finished));
+
+    if stream {
+        renderer.stream_all();
+    } else {
+        renderer.render_all();
+    }
+
+    let status = streaming_command.wait(&builder.config.exec_ctx).unwrap();
+    if !status.success() && builder.is_verbose() {
+        println!(
+            "\n\ncommand did not execute successfully: {cmd:?}\n\
+             expected success, got: {status}",
+        );
+    }
+
+    if !status.success() {
+        if builder.fail_fast {
+            crate::exit!(1);
+        }
+        builder.config.exec_ctx().add_to_delay_failure(format!("{cmd:?}"));
+    }
+
+    status.success()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
