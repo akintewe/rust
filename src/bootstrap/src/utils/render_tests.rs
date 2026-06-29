@@ -97,7 +97,7 @@ pub(crate) fn run_tests_with_callback(
     status.success()
 }
 
-struct Renderer<'a> {
+pub(crate) struct Renderer<'a> {
     stdout: BufReader<ChildStdout>,
     failures: Vec<TestOutcome>,
     benches: Vec<BenchOutcome>,
@@ -116,7 +116,7 @@ struct Renderer<'a> {
 }
 
 impl<'a> Renderer<'a> {
-    fn new(
+    pub(crate) fn new(
         stdout: ChildStdout,
         builder: &'a Builder<'a>,
         record_failed_tests: RecordFailedTests,
@@ -151,12 +151,12 @@ impl<'a> Renderer<'a> {
         }
     }
 
-    fn with_on_test_finished(mut self, cb: Box<dyn Fn(&str)>) -> Self {
+    pub(crate) fn with_on_test_finished(mut self, cb: Box<dyn Fn(&str)>) -> Self {
         self.on_test_finished = Some(cb);
         self
     }
 
-    fn render_all(mut self) {
+    pub(crate) fn render_all(mut self) {
         let mut line = Vec::new();
         loop {
             line.clear();
@@ -188,7 +188,7 @@ impl<'a> Renderer<'a> {
     }
 
     /// Renders the stdout characters one by one
-    fn stream_all(mut self) {
+    pub(crate) fn stream_all(mut self) {
         let mut buffer = [0; 1];
         loop {
             match self.stdout.read(&mut buffer) {
@@ -428,9 +428,6 @@ impl<'a> Renderer<'a> {
                     eprintln!(
                         "failed to write test failure to file: {e} (attempted because `--record` was passed)"
                     );
-                }
-                if let Some(cb) = &self.on_test_finished {
-                    cb(&outcome.name);
                 }
                 self.failures.push(outcome);
             }
