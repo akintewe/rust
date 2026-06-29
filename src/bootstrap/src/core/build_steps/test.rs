@@ -1063,6 +1063,45 @@ impl Step for CompilerCoverage {
             run_tests_fn: coverage_run_tests,
         });
 
+        builder.info("Collecting compiler coverage (run-make-cargo test suite)");
+
+        builder.ensure(Compiletest {
+            test_compiler: compiler,
+            target,
+            mode: CompiletestMode::RunMake,
+            suite: "run-make-cargo",
+            path: "tests/run-make-cargo",
+            compare_mode: None,
+            instrument: true,
+            run_tests_fn: coverage_run_tests,
+        });
+
+        builder.info("Collecting compiler coverage (ui-fulldeps test suite)");
+
+        builder.ensure(Compiletest {
+            test_compiler: compiler,
+            target,
+            mode: CompiletestMode::Ui,
+            suite: "ui-fulldeps",
+            path: "tests/ui-fulldeps",
+            compare_mode: None,
+            instrument: true,
+            run_tests_fn: coverage_run_tests,
+        });
+
+        builder.info("Collecting compiler coverage (crashes test suite)");
+
+        builder.ensure(Compiletest {
+            test_compiler: compiler,
+            target,
+            mode: CompiletestMode::Ui,
+            suite: "crashes",
+            path: "tests/crashes",
+            compare_mode: None,
+            instrument: true,
+            run_tests_fn: coverage_run_tests,
+        });
+
         let profdata_path = builder.out.join("coverage").join("combined.profdata");
         builder.info(&format!("Coverage profdata written to {}", profdata_path.display()));
     }
