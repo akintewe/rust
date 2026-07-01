@@ -1087,6 +1087,10 @@ fn coverage_run_tests(
 
     cmd.env("LLVM_PROFILE_FILE", profraw_dir.join("rustc_%m_%p.profraw").as_os_str());
 
+    // Always force-rerun tests when collecting coverage. Without this, compiletest
+    // skips up-to-date tests and they never write profraw files, causing false negatives.
+    cmd.arg("--force-rerun");
+
     // Merge profraws after each passing test. The callback only fires for passing
     // tests (not ignored or failed ones) — see render_tests.rs. A passing test that
     // produces no profraw files is a bug: the instrumented rustc should always write
