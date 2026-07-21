@@ -1196,17 +1196,19 @@ impl Step for Rustc {
         // our LLVM wrapper. Unless we're explicitly requesting `librustc_driver` to be built with
         // debuginfo (via the debuginfo level of the executables using it): strip this debuginfo
         // away after the fact.
+        // `rust.coverage` implies at least `DebuginfoLevel::Limited` for rustc and tools
+        // (see `with_defaults` in `core::config::config`), so these checks against
+        // `DebuginfoLevel::None` already skip stripping when coverage is enabled via its
+        // default. An explicit `rust.debuginfo-level-rustc = "none"` still strips even
+        // with coverage on, which is the user's explicit choice to respect.
         if builder.config.rust_debuginfo_level_rustc == DebuginfoLevel::None
             && builder.config.rust_debuginfo_level_tools == DebuginfoLevel::None
-            && !builder.config.rust_coverage
         {
             let rustc_driver = target_root_dir.join("librustc_driver.so");
             strip_debug(builder, target, &rustc_driver);
         }
 
-        if builder.config.rust_debuginfo_level_rustc == DebuginfoLevel::None
-            && !builder.config.rust_coverage
-        {
+        if builder.config.rust_debuginfo_level_rustc == DebuginfoLevel::None {
             // Due to LTO a lot of debug info from C++ dependencies such as jemalloc can make it into
             // our final binaries
             strip_debug(builder, target, &target_root_dir.join("rustc-main"));
@@ -1330,9 +1332,15 @@ pub fn rustc_cargo(
         ));
     }
 
-    if builder.config.rust_coverage && build_compiler.stage == 0 {
+    // Instrument every stage of rustc being built, not just stage0 -> stage1: a
+    // `build_compiler.stage == 0` (or `== 1`) restriction here silently produces an
+    // uninstrumented rustc whenever the user requests a different `--stage`.
+    if builder.config.rust_coverage {
         cargo.rustflag("-Cinstrument-coverage");
         cargo.rustflag("-Zcoverage-options=branch");
+        // A single codegen unit avoids a function's coverage regions being split
+        // across multiple object files, which corrupts the coverage mapping when
+        // llvm-cov merges them. See <TODO: link to jyn's review / follow-up issue>.
         cargo.rustflag("-Ccodegen-units=1");
     }
 

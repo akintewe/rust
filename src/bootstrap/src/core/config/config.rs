@@ -1223,9 +1223,16 @@ impl Config {
             }
         }
 
+        // Coverage instrumentation needs at least limited debuginfo (for source-level
+        // line tables) to produce a meaningful report, so `rust.coverage` implies a
+        // debuginfo level the same way `rust.debug` does, instead of requiring every
+        // debuginfo-stripping call site to separately check `rust_coverage`.
+        let rust_coverage =
+            flags_rust_coverage || flags_paths.iter().any(|p| p.ends_with("compiler-coverage"));
+
         let with_defaults = |debuginfo_level_specific: Option<_>| {
             debuginfo_level_specific.or(rust_debuginfo_level).unwrap_or(
-                if rust_debug == Some(true) {
+                if rust_debug == Some(true) || rust_coverage {
                     DebuginfoLevel::Limited
                 } else {
                     DebuginfoLevel::None
@@ -1309,8 +1316,6 @@ impl Config {
                 && src.join(".cargo/config.toml").exists(),
         );
         let verbose_tests = rust_verbose_tests.unwrap_or(exec_ctx.is_verbose());
-        let rust_coverage =
-            flags_rust_coverage || flags_paths.iter().any(|p| p.ends_with("compiler-coverage"));
 
         let record_failed_tests_path =
             out.join(build_record_failed_tests_path.unwrap_or_else(|| "failed-tests".to_string()));

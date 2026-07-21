@@ -1020,8 +1020,13 @@ impl Step for CompilerCoverage {
         let compiler = self.compiler;
         let target = self.target;
 
-        // Ensure the profraw output directory exists before running tests.
+        // Start from a clean profraw directory so `combined.profdata` only
+        // reflects this run, not leftover `.profraw` files from a previous
+        // `compiler-coverage` invocation.
         let profraw_dir = builder.out.join("coverage").join("profraws");
+        if profraw_dir.exists() {
+            t!(fs::remove_dir_all(&profraw_dir));
+        }
         t!(fs::create_dir_all(&profraw_dir));
 
         builder.info("Collecting compiler coverage (UI test suite)");
@@ -1034,7 +1039,7 @@ impl Step for CompilerCoverage {
             path: "tests/ui",
             compare_mode: None,
             instrument: true,
-            run_tests_fn: coverage_run_tests,
+            run_tests_fn: Some(coverage_run_tests),
         });
 
         builder.info("Collecting compiler coverage (incremental test suite)");
@@ -1047,7 +1052,7 @@ impl Step for CompilerCoverage {
             path: "tests/incremental",
             compare_mode: None,
             instrument: true,
-            run_tests_fn: coverage_run_tests,
+            run_tests_fn: Some(coverage_run_tests),
         });
 
         builder.info("Collecting compiler coverage (run-make test suite)");
@@ -1060,7 +1065,7 @@ impl Step for CompilerCoverage {
             path: "tests/run-make",
             compare_mode: None,
             instrument: true,
-            run_tests_fn: coverage_run_tests,
+            run_tests_fn: Some(coverage_run_tests),
         });
 
         let profdata_path = builder.out.join("coverage").join("combined.profdata");
@@ -1087,8 +1092,15 @@ fn coverage_run_tests(
 
     cmd.env("LLVM_PROFILE_FILE", profraw_dir.join("rustc_%m_%p.profraw").as_os_str());
 
-    // Always force-rerun tests when collecting coverage. Without this, compiletest
-    // skips up-to-date tests and they never write profraw files, causing false negatives.
+    // Always force-rerun tests when collecting coverage. Without this,
+    // compiletest skips up-to-date tests and they never write profraw
+    // files, causing false negatives.
+    //
+    // This re-runs the entire suite every time, which is correct but not
+    // free -- jyn suggested folding coverage into compiletest's actual
+    // cache key instead, so unaffected tests could stay cached. Left as
+    // --force-rerun for now; revisit if coverage run time becomes a
+    // bottleneck.
     cmd.arg("--force-rerun");
 
     // Merge profraws after each passing test. The callback only fires for passing
@@ -1150,12 +1162,8 @@ fn coverage_run_tests(
         return true;
     };
 
-    let mut renderer = Renderer::new(
-        streaming_command.stdout.take().unwrap(),
-        builder,
-        record_failed_tests,
-    )
-    .with_on_test_finished(Box::new(on_test_finished));
+    let renderer = Renderer::new(streaming_command.stdout.take().unwrap(), builder, record_failed_tests)
+        .with_on_test_finished(Box::new(on_test_finished));
 
     if stream {
         renderer.stream_all();
@@ -1459,7 +1467,7 @@ impl Step for RustdocJSNotStd {
             path: "tests/rustdoc-js",
             compare_mode: None,
             instrument: false,
-            run_tests_fn: try_run_tests,
+            run_tests_fn: None,
         });
     }
 }
@@ -1894,7 +1902,7 @@ macro_rules! test {
                         value
                     }),
                     instrument: false,
-                    run_tests_fn: try_run_tests,
+                    run_tests_fn: None,
                 })
             }
         }
@@ -2100,7 +2108,7 @@ impl Step for Coverage {
             path: Self::PATH,
             compare_mode: None,
             instrument: false,
-            run_tests_fn: try_run_tests,
+            run_tests_fn: None,
         });
     }
 }
@@ -2146,7 +2154,7 @@ impl Step for MirOpt {
                 path: "tests/mir-opt",
                 compare_mode: None,
                 instrument: false,
-                run_tests_fn: try_run_tests,
+                run_tests_fn: None,
             })
         };
 
@@ -2193,9 +2201,10 @@ struct Compiletest {
     /// When true, passes `-Cinstrument-coverage` and `-Csymbol-mangling-version=v0`
     /// to compiletest so every rustc invocation writes profraw data.
     instrument: bool,
-    /// Replaces the default `try_run_tests` call. Used by `CompilerCoverage` to
-    /// inject per-test profraw merging without changing normal test runs.
-    run_tests_fn: fn(&Builder<'_>, &mut BootstrapCommand, bool, RecordFailedTests) -> bool,
+    /// Replaces the default `try_run_tests` call when set. Used by `CompilerCoverage` to
+    /// inject per-test profraw merging without changing normal test runs. `None` means
+    /// the default `try_run_tests` is used.
+    run_tests_fn: Option<fn(&Builder<'_>, &mut BootstrapCommand, bool, RecordFailedTests) -> bool>,
 }
 
 impl std::fmt::Debug for Compiletest {
@@ -2916,7 +2925,12 @@ Please disable assertions with `rust.debug-assertions = false`.
             target,
             test_compiler.stage,
         );
-        (self.run_tests_fn)(builder, &mut cmd, false, record_failed_tests.clone());
+        self.run_tests_fn.unwrap_or(try_run_tests)(
+            builder,
+            &mut cmd,
+            false,
+            record_failed_tests.clone(),
+        );
 
         if let Some(compare_mode) = compare_mode {
             cmd.arg("--compare-mode").arg(compare_mode);
@@ -2939,7 +2953,7 @@ Please disable assertions with `rust.debug-assertions = false`.
                 suite, mode, compare_mode, test_compiler.host, target
             ));
             let _time = helpers::timeit(builder);
-            (self.run_tests_fn)(builder, &mut cmd, false, record_failed_tests);
+            self.run_tests_fn.unwrap_or(try_run_tests)(builder, &mut cmd, false, record_failed_tests);
         }
     }
 
