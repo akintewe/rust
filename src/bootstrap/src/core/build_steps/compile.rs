@@ -1341,10 +1341,13 @@ pub fn rustc_cargo(
     if builder.config.rust_coverage {
         cargo.rustflag("-Cinstrument-coverage");
         cargo.rustflag("-Zcoverage-options=branch");
-        // A single codegen unit avoids a function's coverage regions being split
-        // across multiple object files, which corrupts the coverage mapping when
-        // llvm-cov merges them. See <TODO: link to jyn's review / follow-up issue>.
-        cargo.rustflag("-Ccodegen-units=1");
+        // `-Ccodegen-units=1` was tested and dropped: A/B coverage runs on
+        // log, itertools, and statig showed no meaningful difference in
+        // covered functions with or without it, and two runs WITH the flag
+        // on the SAME compiler binary already differed by hundreds of
+        // functions on their own. Run-to-run coverage variance in compiler
+        // internals exists independent of codegen-unit count, so the flag
+        // wasn't buying the determinism it looked like it should.
     }
 
     // The stage0 compiler changes infrequently and does not directly depend on code
