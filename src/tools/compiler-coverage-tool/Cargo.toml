@@ -1,5 +1,3 @@
-[workspace]
-
 [package]
 name = "compiler-coverage-tool"
 version = "0.1.0"

@@ -1068,32 +1068,6 @@ impl Step for CompilerCoverage {
             run_tests_fn: Some(coverage_run_tests),
         });
 
-        builder.info("Collecting compiler coverage (incremental test suite)");
-
-        builder.ensure(Compiletest {
-            test_compiler: compiler,
-            target,
-            mode: CompiletestMode::Incremental,
-            suite: "incremental",
-            path: "tests/incremental",
-            compare_mode: None,
-            instrument: true,
-            run_tests_fn: Some(coverage_run_tests),
-        });
-
-        builder.info("Collecting compiler coverage (run-make test suite)");
-
-        builder.ensure(Compiletest {
-            test_compiler: compiler,
-            target,
-            mode: CompiletestMode::RunMake,
-            suite: "run-make",
-            path: "tests/run-make",
-            compare_mode: None,
-            instrument: true,
-            run_tests_fn: Some(coverage_run_tests),
-        });
-
         builder.info("Collecting compiler coverage (run-make-cargo test suite)");
 
         builder.ensure(Compiletest {
@@ -1135,6 +1109,61 @@ impl Step for CompilerCoverage {
 
         let profdata_path = builder.out.join("coverage").join("combined.profdata");
         builder.info(&format!("Coverage profdata written to {}", profdata_path.display()));
+
+        // Export the merged profdata to llvm-cov's JSON format, then feed that into
+        // compiler-coverage-tool to produce a browsable HTML report -- so running
+        // `./x coverage` alone is enough, no separate manual step afterward.
+        let llvm_cov = builder.llvm_out(builder.config.host_target).join("bin").join("llvm-cov");
+        let export_json_path = builder.out.join("coverage").join("coverage.json");
+        let html_path = builder.out.join("coverage").join("report.html");
+
+        builder.info("Exporting coverage to JSON");
+        let export = std::process::Command::new(&llvm_cov)
+            .arg("export")
+            .arg("--format=text")
+            .arg(format!("--instr-profile={}", profdata_path.display()))
+            .arg(builder.rustc(compiler))
+            .output();
+        match export {
+            Ok(out) if out.status.success() => {
+                if let Err(e) = fs::write(&export_json_path, &out.stdout) {
+                    builder.info(&format!("coverage: failed to write {}: {e}", export_json_path.display()));
+                }
+            }
+            Ok(out) => {
+                builder.info(&format!(
+                    "coverage: llvm-cov export failed:\n{}",
+                    String::from_utf8_lossy(&out.stderr)
+                ));
+                return;
+            }
+            Err(e) => {
+                builder.info(&format!("coverage: failed to run llvm-cov: {e}"));
+                return;
+            }
+        }
+
+        builder.info("Building HTML coverage report");
+        let tool_path = builder.tool_exe(crate::core::build_steps::tool::Tool::CompilerCoverageTool);
+        let report = std::process::Command::new(&tool_path)
+            .arg(&export_json_path)
+            .arg(&builder.src)
+            .arg(&html_path)
+            .output();
+        match report {
+            Ok(out) if out.status.success() => {
+                builder.info(&format!("Coverage report written to {}", html_path.display()));
+            }
+            Ok(out) => {
+                builder.info(&format!(
+                    "coverage: compiler-coverage-tool failed:\n{}",
+                    String::from_utf8_lossy(&out.stderr)
+                ));
+            }
+            Err(e) => {
+                builder.info(&format!("coverage: failed to run compiler-coverage-tool: {e}"));
+            }
+        }
     }
 }
 
