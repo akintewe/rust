@@ -312,20 +312,35 @@ fn merge_closures(reports: Vec<FunctionReport>) -> Vec<FunctionReport> {
                 groups.insert(key, r);
             }
             Some(existing) => {
-                // sum counts just like mono merging
-                for (i, count) in report.line_counts.iter().enumerate() {
-                    if let Some(existing_count) = existing.line_counts.get_mut(i) {
-                        *existing_count = match (*existing_count, *count) {
+                // `line_counts[i]` means line `line_start + i` for EACH report's own
+                // span -- a closure's span rarely matches its parent's, so merging by
+                // vec index silently summed/appended unrelated lines. Re-key both
+                // sides by actual line number into the union of both spans instead.
+                let new_line_start = existing.line_start.min(report.line_start);
+                let existing_line_end = existing.line_start + existing.line_counts.len();
+                let report_line_end = report.line_start + report.line_counts.len();
+                let new_line_end = existing_line_end.max(report_line_end);
+
+                let mut merged: Vec<Option<u64>> =
+                    vec![None; new_line_end.saturating_sub(new_line_start)];
+
+                let place = |line_start: usize, counts: &[Option<u64>], merged: &mut Vec<Option<u64>>| {
+                    for (i, count) in counts.iter().enumerate() {
+                        let lineno = line_start + i;
+                        let idx = lineno - new_line_start;
+                        merged[idx] = match (merged[idx], *count) {
                             (Some(a), Some(b)) => Some(a.saturating_add(b)),
                             (Some(a), None) => Some(a),
                             (None, Some(b)) => Some(b),
                             (None, None) => None,
                         };
-                    } else if *count != None {
-                        // closure covers lines beyond the parent's span — extend
-                        existing.line_counts.push(*count);
                     }
-                }
+                };
+                place(existing.line_start, &existing.line_counts, &mut merged);
+                place(report.line_start, &report.line_counts, &mut merged);
+
+                existing.line_start = new_line_start;
+                existing.line_counts = merged;
             }
         }
     }
