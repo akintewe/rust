@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use rustc_demangle::demangle;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 // llvm-cov export --format=text JSON structures
 #[derive(Deserialize)]
@@ -208,8 +208,9 @@ fn main() -> Result<()> {
     let reports = merge_closures(reports);
     eprintln!("{} functions after merging closures into parents", reports.len());
 
-    // categorise based on summed counts
-    let categorised: Vec<(&FunctionReport, FunctionCategory)> = reports.iter().map(|r| {
+    // categorise based on summed counts. index in `reports` doubles as a stable
+    // id used to look up this function's source lines in the JSON shards.
+    let categorised: Vec<(usize, &FunctionReport, FunctionCategory)> = reports.iter().enumerate().map(|(id, r)| {
         let tracked: Vec<u64> = r.line_counts.iter().filter_map(|c| *c).collect();
         let cat = if tracked.is_empty() {
             FunctionCategory::FullyCovered
@@ -220,17 +221,25 @@ fn main() -> Result<()> {
         } else {
             FunctionCategory::PartiallyCovered
         };
-        (r, cat)
+        (id, r, cat)
     }).collect();
 
-    let fully_count = categorised.iter().filter(|(_, c)| *c == FunctionCategory::FullyCovered).count();
-    let partial_count = categorised.iter().filter(|(_, c)| *c == FunctionCategory::PartiallyCovered).count();
-    let uncovered_count = categorised.iter().filter(|(_, c)| *c == FunctionCategory::FullyUncovered).count();
+    let fully_count = categorised.iter().filter(|(_, _, c)| *c == FunctionCategory::FullyCovered).count();
+    let partial_count = categorised.iter().filter(|(_, _, c)| *c == FunctionCategory::PartiallyCovered).count();
+    let uncovered_count = categorised.iter().filter(|(_, _, c)| *c == FunctionCategory::FullyUncovered).count();
     let total = fully_count + partial_count + uncovered_count;
 
     eprintln!("fully: {fully_count}, partial: {partial_count}, uncovered: {uncovered_count}");
 
-    let html = render_html(&categorised, &source_cache, fully_count, partial_count, uncovered_count, total);
+    let shard_dir_name = format!(
+        "{}_sources",
+        output_path.file_stem().and_then(|s| s.to_str()).unwrap_or("report")
+    );
+    let shard_dir = output_path.parent().unwrap_or(Path::new(".")).join(&shard_dir_name);
+    eprintln!("writing source shards to {}...", shard_dir.display());
+    write_source_shards(&categorised, &source_cache, &shard_dir)?;
+
+    let html = render_html(&categorised, fully_count, partial_count, uncovered_count, total, &shard_dir_name);
 
     // Write to a temp file first, then rename atomically — so a crash mid-run
     // never leaves a partial or stale output file behind.
@@ -245,6 +254,58 @@ fn main() -> Result<()> {
     println!("  partially:        {} ({:.1}%)", partial_count, pct(partial_count, total));
     println!("  uncovered:        {} ({:.1}%)", uncovered_count, pct(uncovered_count, total));
     println!("  total:            {}", total);
+
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct SourceLine<'a> {
+    #[serde(rename = "n")]
+    lineno: usize,
+    #[serde(rename = "c")]
+    class: &'static str,
+    #[serde(rename = "t")]
+    text: &'a str,
+}
+
+const SHARD_COUNT: usize = 16;
+
+fn write_source_shards(
+    categorised: &[(usize, &FunctionReport, FunctionCategory)],
+    source_cache: &HashMap<String, Vec<String>>,
+    shard_dir: &Path,
+) -> Result<()> {
+    std::fs::create_dir_all(shard_dir)
+        .with_context(|| format!("failed to create {}", shard_dir.display()))?;
+
+    let mut shards: Vec<HashMap<usize, Vec<SourceLine<'_>>>> =
+        (0..SHARD_COUNT).map(|_| HashMap::new()).collect();
+
+    for (fn_id, report, _) in categorised {
+        let source_lines = source_cache.get(&report.filename);
+        let lines: Vec<SourceLine<'_>> = report.line_counts.iter().enumerate().map(|(i, count)| {
+            let lineno = report.line_start + i;
+            let class = match count {
+                Some(n) if *n > 0 => "c",
+                Some(_) => "u",
+                None => "i",
+            };
+            let text = source_lines
+                .and_then(|ls| ls.get(lineno.saturating_sub(1)))
+                .map(|s| s.as_str())
+                .unwrap_or("");
+            SourceLine { lineno, class, text }
+        }).collect();
+        shards[fn_id % SHARD_COUNT].insert(*fn_id, lines);
+    }
+
+    for (i, shard) in shards.iter().enumerate() {
+        let shard_path = shard_dir.join(format!("shard-{i}.json"));
+        let json = serde_json::to_string(shard)
+            .with_context(|| format!("failed to serialize shard {i}"))?;
+        std::fs::write(&shard_path, json)
+            .with_context(|| format!("failed to write {}", shard_path.display()))?;
+    }
 
     Ok(())
 }
@@ -364,17 +425,17 @@ fn resolve_source_path(filename: &str, src_root: &Path) -> Option<PathBuf> {
 }
 
 fn render_html(
-    categorised: &[(&FunctionReport, FunctionCategory)],
-    source_cache: &HashMap<String, Vec<String>>,
+    categorised: &[(usize, &FunctionReport, FunctionCategory)],
     fully_count: usize,
     partial_count: usize,
     uncovered_count: usize,
     total: usize,
+    shard_dir_name: &str,
 ) -> String {
-    let covered_lines_total: usize = categorised.iter().map(|(r, _)| {
+    let covered_lines_total: usize = categorised.iter().map(|(_, r, _)| {
         r.line_counts.iter().filter(|c| c.map_or(false, |n| n > 0)).count()
     }).sum();
-    let tracked_lines_total: usize = categorised.iter().map(|(r, _)| {
+    let tracked_lines_total: usize = categorised.iter().map(|(_, r, _)| {
         r.line_counts.iter().filter(|c| c.is_some()).count()
     }).sum();
     let overall_pct = pct(covered_lines_total, tracked_lines_total);
@@ -526,6 +587,55 @@ function onSearch(val) {{
   currentSearch = val;
   applyFilters();
 }}
+
+// Source lines are split across shard-N.json files (see write_source_shards
+// in main.rs) instead of embedded in the html -- fetched lazily the first
+// time a function's <details> is opened, cached in memory after that.
+var SHARD_COUNT = {shard_count};
+var SHARD_DIR = '{shard_dir_name}';
+var shardCache = {{}};
+var shardPromises = {{}};
+
+function loadSource(details) {{
+  if (!details.open) return;
+  if (details.getAttribute('data-loaded') === '1') return;
+  var fnId = details.getAttribute('data-fn-id');
+  var body = details.querySelector('.src-body');
+  var shardKey = Number(fnId) % SHARD_COUNT;
+
+  var fetchPromise = shardPromises[shardKey];
+  if (!fetchPromise) {{
+    fetchPromise = fetch(SHARD_DIR + '/shard-' + shardKey + '.json')
+      .then(r => r.json())
+      .then(data => {{ shardCache[shardKey] = data; return data; }});
+    shardPromises[shardKey] = fetchPromise;
+  }}
+
+  fetchPromise.then(data => {{
+    var lines = data[fnId];
+    if (!lines) {{
+      body.innerHTML = '<tr><td class="code">(source unavailable)</td></tr>';
+      return;
+    }}
+    var classMap = {{ c: 'line-covered', u: 'line-uncovered', i: 'line-ignored' }};
+    var html = '';
+    for (var i = 0; i < lines.length; i++) {{
+      var ln = lines[i];
+      var cls = classMap[ln.c] || 'line-ignored';
+      html += '<tr class="' + cls + '"><td class="lineno">' + ln.n + '</td><td class="code">' + escapeHtml(ln.t) + '</td></tr>';
+    }}
+    body.innerHTML = html;
+    details.setAttribute('data-loaded', '1');
+  }}).catch(err => {{
+    body.innerHTML = '<tr><td class="code">(failed to load source: ' + escapeHtml(String(err)) + ')</td></tr>';
+  }});
+}}
+
+function escapeHtml(s) {{
+  var div = document.createElement('div');
+  div.textContent = s;
+  return div.innerHTML;
+}}
 </script>
 <div class="search-bar">
   <input type="text" placeholder="Search functions or file paths..." oninput="onSearch(this.value)" />
@@ -539,6 +649,8 @@ function onSearch(val) {{
         fully_count = fully_count,
         partial_count = partial_count,
         uncovered_count = uncovered_count,
+        shard_count = SHARD_COUNT,
+        shard_dir_name = shard_dir_name,
     ));
 
     // render in order: uncovered first (most interesting), then partial, then fully
@@ -556,13 +668,13 @@ function onSearch(val) {{
             count = count,
         ));
 
-        let section_fns: Vec<&(&FunctionReport, FunctionCategory)> = categorised
+        let section_fns: Vec<&(usize, &FunctionReport, FunctionCategory)> = categorised
             .iter()
-            .filter(|(_, cat)| cat == cat_variant)
+            .filter(|(_, _, cat)| cat == cat_variant)
             .collect();
 
         let mut seen_crates: Vec<String> = vec![];
-        for (report, _) in &section_fns {
+        for (_, report, _) in &section_fns {
             let krate = crate_name(&report.filename);
             if !seen_crates.contains(&krate) {
                 seen_crates.push(krate);
@@ -570,9 +682,9 @@ function onSearch(val) {{
         }
 
         for krate in &seen_crates {
-            let krate_fns: Vec<&&(&FunctionReport, FunctionCategory)> = section_fns
+            let krate_fns: Vec<&&(usize, &FunctionReport, FunctionCategory)> = section_fns
                 .iter()
-                .filter(|(r, _)| &crate_name(&r.filename) == krate)
+                .filter(|(_, r, _)| &crate_name(&r.filename) == krate)
                 .collect();
             let krate_count = krate_fns.len();
 
@@ -584,15 +696,15 @@ function onSearch(val) {{
 
             // nest by file path within the crate
             let mut seen_files: Vec<String> = vec![];
-            for (report, _) in &krate_fns {
+            for (_, report, _) in &krate_fns {
                 let f = file_path_in_crate(&report.filename);
                 if !seen_files.contains(&f) { seen_files.push(f); }
             }
 
             for file in &seen_files {
-                let file_fns: Vec<&&&(&FunctionReport, FunctionCategory)> = krate_fns
+                let file_fns: Vec<&&&(usize, &FunctionReport, FunctionCategory)> = krate_fns
                     .iter()
-                    .filter(|(r, _)| &file_path_in_crate(&r.filename) == file)
+                    .filter(|(_, r, _)| &file_path_in_crate(&r.filename) == file)
                     .collect();
                 let file_count = file_fns.len();
 
@@ -602,7 +714,7 @@ function onSearch(val) {{
                     file_count = file_count,
                 ));
 
-        for (report, _) in &file_fns {
+        for (fn_id, report, _) in &file_fns {
             let short_filename = if let Some(idx) = report.filename.find("/compiler/") {
                 &report.filename[idx + 1..]
             } else {
@@ -619,44 +731,26 @@ function onSearch(val) {{
                 FunctionCategory::FullyUncovered => ("badge-uncovered", "0% covered".to_string()),
             };
 
+            // Source lines load lazily from a JSON shard when this <details>
+            // is first opened -- see loadSource() in the script above. Embedding
+            // every function's source inline made reports ~77MB; this keeps the
+            // initial HTML to just the collapsed summary rows.
             out.push_str(&format!(
                 r#"<div class="fn-block cat-{cat_class}">
-<details>
+<details data-fn-id="{fn_id}" ontoggle="loadSource(this)">
 <summary><span class="fn-name">{fn_name}</span><span class="fn-badge {badge_class}">{badge_text}</span></summary>
 <div class="fn-file">{short_file}:{line_start}</div>
-<div class="source-view"><table class="src">
+<div class="source-view"><table class="src"><tbody class="src-body"><tr><td class="code src-loading">loading...</td></tr></tbody></table></div>
+</details></div>
 "#,
                 cat_class = cat_class,
+                fn_id = fn_id,
                 fn_name = escape(&report.demangled),
                 short_file = escape(short_filename),
                 line_start = report.line_start,
                 badge_class = badge_class,
                 badge_text = badge_text,
             ));
-
-            let source_lines = source_cache.get(&report.filename);
-
-            for (i, count) in report.line_counts.iter().enumerate() {
-                let lineno = report.line_start + i;
-                let line_class = match count {
-                    Some(n) if *n > 0 => "line-covered",
-                    Some(_) => "line-uncovered",
-                    None => "line-ignored",
-                };
-                let src_text = source_lines
-                    .and_then(|ls| ls.get(lineno.saturating_sub(1)))
-                    .map(|s| s.as_str())
-                    .unwrap_or("");
-
-                out.push_str(&format!(
-                    "<tr class=\"{line_class}\"><td class=\"lineno\">{lineno}</td><td class=\"code\">{code}</td></tr>\n",
-                    line_class = line_class,
-                    lineno = lineno,
-                    code = escape(src_text),
-                ));
-            }
-
-            out.push_str("</table></div></details></div>\n");
         }
 
             out.push_str("</div></details>\n"); // close file-group
