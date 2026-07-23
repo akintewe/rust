@@ -58,6 +58,12 @@ fn main() -> Result<()> {
     let src_root = PathBuf::from(&args[2]);
     let output_path = PathBuf::from(&args[3]);
 
+    let github_base = github_base_url(&src_root);
+    match &github_base {
+        Some(url) => eprintln!("linking functions to {url}/..."),
+        None => eprintln!("no github origin remote found, report will not link to source"),
+    }
+
     eprintln!("reading {}...", json_path.display());
     let json_text = std::fs::read_to_string(&json_path)
         .with_context(|| format!("failed to read {}", json_path.display()))?;
@@ -239,7 +245,7 @@ fn main() -> Result<()> {
     eprintln!("writing source shards to {}...", shard_dir.display());
     write_source_shards(&categorised, &source_cache, &shard_dir)?;
 
-    let html = render_html(&categorised, fully_count, partial_count, uncovered_count, total, &shard_dir_name);
+    let html = render_html(&categorised, fully_count, partial_count, uncovered_count, total, &shard_dir_name, &github_base);
 
     // Write to a temp file first, then rename atomically — so a crash mid-run
     // never leaves a partial or stale output file behind.
@@ -424,6 +430,39 @@ fn resolve_source_path(filename: &str, src_root: &Path) -> Option<PathBuf> {
     if p.exists() { Some(p) } else { None }
 }
 
+// builds a github.com/<owner>/<repo>/blob/<sha> url from the origin remote
+// and current commit, or None if src_root isn't a github checkout
+fn github_base_url(src_root: &Path) -> Option<String> {
+    let remote_out = std::process::Command::new("git")
+        .args(["-C", &src_root.to_string_lossy(), "remote", "get-url", "origin"])
+        .output()
+        .ok()?;
+    if !remote_out.status.success() {
+        return None;
+    }
+    let remote_url = String::from_utf8_lossy(&remote_out.stdout).trim().to_string();
+
+    // handle both "https://github.com/owner/repo.git" and "git@github.com:owner/repo.git"
+    let owner_repo = if let Some(rest) = remote_url.strip_prefix("https://github.com/") {
+        rest.trim_end_matches(".git").to_string()
+    } else if let Some(rest) = remote_url.strip_prefix("git@github.com:") {
+        rest.trim_end_matches(".git").to_string()
+    } else {
+        return None;
+    };
+
+    let sha_out = std::process::Command::new("git")
+        .args(["-C", &src_root.to_string_lossy(), "rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    if !sha_out.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8_lossy(&sha_out.stdout).trim().to_string();
+
+    Some(format!("https://github.com/{owner_repo}/blob/{sha}"))
+}
+
 fn render_html(
     categorised: &[(usize, &FunctionReport, FunctionCategory)],
     fully_count: usize,
@@ -431,6 +470,7 @@ fn render_html(
     uncovered_count: usize,
     total: usize,
     shard_dir_name: &str,
+    github_base: &Option<String>,
 ) -> String {
     let covered_lines_total: usize = categorised.iter().map(|(_, r, _)| {
         r.line_counts.iter().filter(|c| c.map_or(false, |n| n > 0)).count()
@@ -735,19 +775,35 @@ function escapeHtml(s) {{
             // is first opened -- see loadSource() in the script above. Embedding
             // every function's source inline made reports ~77MB; this keeps the
             // initial HTML to just the collapsed summary rows.
+            //
+            // The file:line label links out to GitHub (using the origin remote
+            // and commit the report was built from) when one was found, so a
+            // maintainer can jump straight to real context around the function
+            // instead of the isolated lines this report shows.
+            let file_line_html = match github_base {
+                Some(base) => format!(
+                    r#"<a href="{base}/{path}#L{line}" target="_blank" rel="noopener">{short_file}:{line_start}</a>"#,
+                    base = base,
+                    path = escape(short_filename),
+                    line = report.line_start,
+                    short_file = escape(short_filename),
+                    line_start = report.line_start,
+                ),
+                None => format!("{}:{}", escape(short_filename), report.line_start),
+            };
+
             out.push_str(&format!(
                 r#"<div class="fn-block cat-{cat_class}">
 <details data-fn-id="{fn_id}" ontoggle="loadSource(this)">
 <summary><span class="fn-name">{fn_name}</span><span class="fn-badge {badge_class}">{badge_text}</span></summary>
-<div class="fn-file">{short_file}:{line_start}</div>
+<div class="fn-file">{file_line_html}</div>
 <div class="source-view"><table class="src"><tbody class="src-body"><tr><td class="code src-loading">loading...</td></tr></tbody></table></div>
 </details></div>
 "#,
                 cat_class = cat_class,
                 fn_id = fn_id,
                 fn_name = escape(&report.demangled),
-                short_file = escape(short_filename),
-                line_start = report.line_start,
+                file_line_html = file_line_html,
                 badge_class = badge_class,
                 badge_text = badge_text,
             ));
