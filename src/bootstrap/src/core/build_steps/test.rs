@@ -1193,8 +1193,8 @@ fn coverage_run_tests(
     // files, causing false negatives.
     //
     // This re-runs the entire suite every time, which is correct but not
-    // free -- jyn suggested folding coverage into compiletest's actual
-    // cache key instead, so unaffected tests could stay cached. Left as
+    // free. A better fix would fold coverage into compiletest's actual
+    // cache key so unaffected tests could stay cached. Left as
     // --force-rerun for now; revisit if coverage run time becomes a
     // bottleneck.
     cmd.arg("--force-rerun");
