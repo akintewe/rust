@@ -1117,13 +1117,39 @@ impl Step for CompilerCoverage {
         let export_json_path = builder.out.join("coverage").join("coverage.json");
         let html_path = builder.out.join("coverage").join("report.html");
 
+        // `builder.rustc(compiler)` is a thin wrapper binary -- almost all of
+        // rustc's actual code lives in librustc_driver, so llvm-cov needs that
+        // as an extra --object to see anything beyond the wrapper's own main().
+        let rustc_libdir = builder.rustc_libdir(compiler);
+        let driver_lib = fs::read_dir(&rustc_libdir).ok().and_then(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .find(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|n| n.starts_with("librustc_driver-") && n.ends_with(".so"))
+                        .unwrap_or(false)
+                })
+        });
+
         builder.info("Exporting coverage to JSON");
-        let export = std::process::Command::new(&llvm_cov)
+        let mut export_cmd = std::process::Command::new(&llvm_cov);
+        export_cmd
             .arg("export")
             .arg("--format=text")
             .arg(format!("--instr-profile={}", profdata_path.display()))
-            .arg(builder.rustc(compiler))
-            .output();
+            .arg(builder.rustc(compiler));
+        if let Some(driver_lib) = &driver_lib {
+            export_cmd.arg("--object").arg(driver_lib);
+        } else {
+            builder.info(&format!(
+                "coverage: could not find librustc_driver in {}, \
+                 report will be missing most compiler functions",
+                rustc_libdir.display()
+            ));
+        }
+        let export = export_cmd.output();
         match export {
             Ok(out) if out.status.success() => {
                 if let Err(e) = fs::write(&export_json_path, &out.stdout) {
@@ -1199,57 +1225,108 @@ fn coverage_run_tests(
     // bottleneck.
     cmd.arg("--force-rerun");
 
-    // Merge profraws after each passing test. The callback only fires for passing
-    // tests (not ignored or failed ones) — see render_tests.rs. A passing test that
-    // produces no profraw files is a bug: the instrumented rustc should always write
-    // at least one profraw when it runs.
-    let on_test_finished = move |test_name: &str| {
-        let profraws: Vec<_> = match fs::read_dir(&profraw_dir) {
-            Ok(entries) => entries
-                .filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .filter(|p| p.extension().map(|x| x == "profraw").unwrap_or(false))
-                .collect(),
-            Err(e) => {
-                eprintln!("coverage: failed to read profraw dir: {e}");
+    // How many finished tests to accumulate before running an actual merge.
+    // Merging after every single test means spawning an llvm-profdata process
+    // per test, and each merge re-reads/re-writes the whole growing profdata
+    // file -- with 20k+ tests that adds up fast. Batching amortizes the
+    // subprocess and I/O cost across many tests at once.
+    const MERGE_BATCH_SIZE: usize = 100;
+
+    // on_test_finished only fires from render_tests.rs's single reader thread
+    // (compiletest's own parallel test runner serializes results onto one
+    // stdout pipe before we ever see them), so there's no concurrent access
+    // to worry about here. The channel exists to move the actual merge work
+    // off of that thread: the callback stays cheap (send a signal), and this
+    // background thread does the batched llvm-profdata calls without
+    // blocking test-output rendering while a merge runs.
+    let (finished_tx, finished_rx) = std::sync::mpsc::channel::<()>();
+
+    let merge_profraw_dir = profraw_dir.clone();
+    let merge_profdata_path = profdata_path.clone();
+    let merge_llvm_profdata = llvm_profdata.clone();
+    let merge_thread = std::thread::spawn(move || {
+        let do_merge = || {
+            let profraws: Vec<_> = match fs::read_dir(&merge_profraw_dir) {
+                Ok(entries) => entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().map(|x| x == "profraw").unwrap_or(false))
+                    .collect(),
+                Err(e) => {
+                    eprintln!("coverage: failed to read profraw dir: {e}");
+                    return;
+                }
+            };
+
+            if profraws.is_empty() {
                 return;
+            }
+
+            let mut merge = std::process::Command::new(&merge_llvm_profdata);
+            merge.arg("merge").arg("--sparse").arg("-o").arg(&merge_profdata_path);
+            if merge_profdata_path.exists() {
+                merge.arg(&merge_profdata_path);
+            }
+            for p in &profraws {
+                merge.arg(p);
+            }
+            match merge.output() {
+                Ok(out) if out.status.success() => {
+                    for p in &profraws {
+                        if let Err(e) = fs::remove_file(p) {
+                            eprintln!("coverage: failed to remove {}: {e}", p.display());
+                        }
+                    }
+                }
+                Ok(out) => {
+                    eprintln!(
+                        "coverage: llvm-profdata merge failed:\n{}",
+                        String::from_utf8_lossy(&out.stderr)
+                    );
+                }
+                Err(e) => {
+                    eprintln!("coverage: failed to run llvm-profdata: {e}");
+                }
             }
         };
 
-        if profraws.is_empty() {
+        let mut pending = 0usize;
+        // recv() returns Err once every sender is dropped, i.e. once the test
+        // run is done and the last batch needs flushing.
+        while finished_rx.recv().is_ok() {
+            pending += 1;
+            if pending >= MERGE_BATCH_SIZE {
+                do_merge();
+                pending = 0;
+            }
+        }
+        if pending > 0 {
+            do_merge();
+        }
+    });
+
+    // Merge profraws after each passing test. The callback only fires for passing
+    // tests (not ignored or failed ones) — see render_tests.rs. A passing test that
+    // produces no profraw files is a bug: the instrumented rustc should always write
+    // at least one profraw when it runs. That check still needs the directory read,
+    // so it stays here rather than moving into the batched merge thread.
+    let on_test_finished = move |test_name: &str| {
+        let has_profraw = fs::read_dir(&profraw_dir)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .any(|e| e.path().extension().map(|x| x == "profraw").unwrap_or(false))
+            })
+            .unwrap_or(false);
+        if !has_profraw {
             eprintln!(
                 "coverage: test `{test_name}` passed but wrote no profraw files; \
                  the instrumented rustc may not have run"
             );
-            return;
         }
-
-        let mut merge = std::process::Command::new(&llvm_profdata);
-        merge.arg("merge").arg("--sparse").arg("-o").arg(&profdata_path);
-        if profdata_path.exists() {
-            merge.arg(&profdata_path);
-        }
-        for p in &profraws {
-            merge.arg(p);
-        }
-        match merge.output() {
-            Ok(out) if out.status.success() => {
-                for p in &profraws {
-                    if let Err(e) = fs::remove_file(p) {
-                        eprintln!("coverage: failed to remove {}: {e}", p.display());
-                    }
-                }
-            }
-            Ok(out) => {
-                eprintln!(
-                    "coverage: llvm-profdata merge failed:\n{}",
-                    String::from_utf8_lossy(&out.stderr)
-                );
-            }
-            Err(e) => {
-                eprintln!("coverage: failed to run llvm-profdata: {e}");
-            }
-        }
+        // ignore send errors -- if the merge thread already exited there's
+        // nothing left to signal
+        let _ = finished_tx.send(());
     };
 
     builder.do_if_verbose(|| println!("running: {cmd:?}"));
@@ -1266,6 +1343,8 @@ fn coverage_run_tests(
     } else {
         renderer.render_all();
     }
+
+    merge_thread.join().unwrap();
 
     let status = streaming_command.wait(&builder.config.exec_ctx).unwrap();
     if !status.success() && builder.is_verbose() {
