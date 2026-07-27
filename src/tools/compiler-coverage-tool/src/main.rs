@@ -59,25 +59,92 @@ fn main() -> Result<()> {
 
     eprintln!("fully: {fully_count}, partial: {partial_count}, uncovered: {uncovered_count}");
 
-    let shard_dir_name = format!(
-        "{}_sources",
-        output_path.file_stem().and_then(|s| s.to_str()).unwrap_or("report")
-    );
-    let shard_dir = output_path.parent().unwrap_or(Path::new(".")).join(&shard_dir_name);
+    let base_name = output_path.file_stem().and_then(|s| s.to_str()).unwrap_or("report").to_string();
+    let out_dir = output_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+
+    let shard_dir_name = format!("{base_name}_sources");
+    let shard_dir = out_dir.join(&shard_dir_name);
     eprintln!("writing source shards to {}...", shard_dir.display());
     render::write_source_shards(&categorised, &source_cache, &shard_dir)?;
 
-    let html = render::render_html(&categorised, fully_count, partial_count, uncovered_count, total, &shard_dir_name, &github_base);
+    // The report is split into an index page plus one page per coverage
+    // category instead of one file with every function in the compiler --
+    // a single-page report of the whole compiler is tens of megabytes of
+    // html even with source lines shard'd out separately, since the
+    // crate/file/function tree itself is still huge.
+    let paths = render::report_paths(&base_name);
 
-    // Write to a temp file first, then rename atomically — so a crash mid-run
-    // never leaves a partial or stale output file behind.
-    let tmp_path = output_path.with_extension("html.tmp");
-    std::fs::write(&tmp_path, html)
-        .with_context(|| format!("failed to write {}", tmp_path.display()))?;
-    std::fs::rename(&tmp_path, &output_path)
-        .with_context(|| format!("failed to rename {} to {}", tmp_path.display(), output_path.display()))?;
+    let covered_lines_total: usize = categorised.iter().map(|(_, r, _)| {
+        r.line_counts.iter().filter(|c| c.map_or(false, |n| n > 0)).count()
+    }).sum();
+    let tracked_lines_total: usize = categorised.iter().map(|(_, r, _)| {
+        r.line_counts.iter().filter(|c| c.is_some()).count()
+    }).sum();
 
-    println!("written to {}", output_path.display());
+    let pages = [
+        (
+            &paths.index,
+            render::render_index(
+                fully_count,
+                partial_count,
+                uncovered_count,
+                total,
+                covered_lines_total,
+                tracked_lines_total,
+                &paths,
+            ),
+        ),
+        (
+            &paths.uncovered,
+            render::render_category_page(
+                &categorised,
+                FunctionCategory::FullyUncovered,
+                "uncovered",
+                "Fully Uncovered",
+                &shard_dir_name,
+                &github_base,
+                &paths,
+            ),
+        ),
+        (
+            &paths.partially_covered,
+            render::render_category_page(
+                &categorised,
+                FunctionCategory::PartiallyCovered,
+                "partial",
+                "Partially Covered",
+                &shard_dir_name,
+                &github_base,
+                &paths,
+            ),
+        ),
+        (
+            &paths.fully_covered,
+            render::render_category_page(
+                &categorised,
+                FunctionCategory::FullyCovered,
+                "fully",
+                "Fully Covered",
+                &shard_dir_name,
+                &github_base,
+                &paths,
+            ),
+        ),
+    ];
+
+    // Write each page to a temp file first, then rename atomically -- so a
+    // crash mid-run never leaves a partial or stale output file behind.
+    for (filename, html) in &pages {
+        let final_path = out_dir.join(filename);
+        let tmp_path = final_path.with_extension("html.tmp");
+        std::fs::write(&tmp_path, html)
+            .with_context(|| format!("failed to write {}", tmp_path.display()))?;
+        std::fs::rename(&tmp_path, &final_path)
+            .with_context(|| format!("failed to rename {} to {}", tmp_path.display(), final_path.display()))?;
+    }
+
+    let index_path = out_dir.join(&paths.index);
+    println!("written to {}", index_path.display());
     println!("  fully covered:    {} ({:.1}%)", fully_count, pct(fully_count, total));
     println!("  partially:        {} ({:.1}%)", partial_count, pct(partial_count, total));
     println!("  uncovered:        {} ({:.1}%)", uncovered_count, pct(uncovered_count, total));
