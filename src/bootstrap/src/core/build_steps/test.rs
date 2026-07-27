@@ -1187,12 +1187,11 @@ impl Step for CompilerCoverage {
     }
 }
 
-/// Replacement for `try_run_tests` used by `CompilerCoverage`.
-///
-/// Adds `-Cinstrument-coverage` to the compiletest host/target rustflags so that
-/// the compiler being tested is instrumented, sets `LLVM_PROFILE_FILE` so each
-/// rustc invocation writes a `.profraw` file, and merges those profraws into a
-/// single `combined.profdata` after every passing test.
+/// Replacement for `try_run_tests` used by `CompilerCoverage`. The compiler
+/// itself is already built with `-Cinstrument-coverage` (see `compile.rs`) --
+/// this just points each rustc invocation at a `.profraw` file via
+/// `LLVM_PROFILE_FILE` and merges the results into `combined.profdata` as
+/// tests finish, batching the merges on a background thread (below).
 fn coverage_run_tests(
     builder: &Builder<'_>,
     cmd: &mut BootstrapCommand,
@@ -2766,10 +2765,6 @@ Please disable assertions with `rust.debug-assertions = false`.
         if target.is_synthetic() {
             cmd.arg("--target-rustcflags").arg("-Zunstable-options");
         }
-
-        // When collecting coverage, LLVM_PROFILE_FILE is set on the compiletest
-        // process and inherited by rustc subprocesses. Since rustc itself is
-        // instrumented (via compile.rs), no extra flags are needed here.
 
         cmd.arg("--python").arg(
             builder.config.python.as_ref().expect("python is required for running rustdoc tests"),
