@@ -1038,8 +1038,7 @@ impl Step for CompilerCoverage {
             suite: "ui",
             path: "tests/ui",
             compare_mode: None,
-            instrument: true,
-            run_tests_fn: Some(coverage_run_tests),
+            run_tests_fn: TestRunnerKind::Coverage,
         });
 
         builder.info("Collecting compiler coverage (incremental test suite)");
@@ -1051,8 +1050,7 @@ impl Step for CompilerCoverage {
             suite: "incremental",
             path: "tests/incremental",
             compare_mode: None,
-            instrument: true,
-            run_tests_fn: Some(coverage_run_tests),
+            run_tests_fn: TestRunnerKind::Coverage,
         });
 
         builder.info("Collecting compiler coverage (run-make test suite)");
@@ -1064,8 +1062,7 @@ impl Step for CompilerCoverage {
             suite: "run-make",
             path: "tests/run-make",
             compare_mode: None,
-            instrument: true,
-            run_tests_fn: Some(coverage_run_tests),
+            run_tests_fn: TestRunnerKind::Coverage,
         });
 
         builder.info("Collecting compiler coverage (run-make-cargo test suite)");
@@ -1077,8 +1074,7 @@ impl Step for CompilerCoverage {
             suite: "run-make-cargo",
             path: "tests/run-make-cargo",
             compare_mode: None,
-            instrument: true,
-            run_tests_fn: Some(coverage_run_tests),
+            run_tests_fn: TestRunnerKind::Coverage,
         });
 
         builder.info("Collecting compiler coverage (ui-fulldeps test suite)");
@@ -1090,8 +1086,7 @@ impl Step for CompilerCoverage {
             suite: "ui-fulldeps",
             path: "tests/ui-fulldeps",
             compare_mode: None,
-            instrument: true,
-            run_tests_fn: Some(coverage_run_tests),
+            run_tests_fn: TestRunnerKind::Coverage,
         });
 
         builder.info("Collecting compiler coverage (crashes test suite)");
@@ -1103,8 +1098,7 @@ impl Step for CompilerCoverage {
             suite: "crashes",
             path: "tests/crashes",
             compare_mode: None,
-            instrument: true,
-            run_tests_fn: Some(coverage_run_tests),
+            run_tests_fn: TestRunnerKind::Coverage,
         });
 
         let profdata_path = builder.out.join("coverage").join("combined.profdata");
@@ -1641,8 +1635,7 @@ impl Step for RustdocJSNotStd {
             suite: "rustdoc-js",
             path: "tests/rustdoc-js",
             compare_mode: None,
-            instrument: false,
-            run_tests_fn: None,
+            run_tests_fn: TestRunnerKind::Default,
         });
     }
 }
@@ -2076,8 +2069,7 @@ macro_rules! test {
                         $( value = $compare_mode; )?
                         value
                     }),
-                    instrument: false,
-                    run_tests_fn: None,
+                    run_tests_fn: TestRunnerKind::Default,
                 })
             }
         }
@@ -2282,8 +2274,7 @@ impl Step for Coverage {
             suite: Self::SUITE,
             path: Self::PATH,
             compare_mode: None,
-            instrument: false,
-            run_tests_fn: None,
+            run_tests_fn: TestRunnerKind::Default,
         });
     }
 }
@@ -2328,8 +2319,7 @@ impl Step for MirOpt {
                 suite: "mir-opt",
                 path: "tests/mir-opt",
                 compare_mode: None,
-                instrument: false,
-                run_tests_fn: None,
+                run_tests_fn: TestRunnerKind::Default,
             })
         };
 
@@ -2364,7 +2354,7 @@ impl Step for MirOpt {
 /// Compiles all tests with `test_compiler` for `target` with the specified
 /// compiletest `mode` and `suite` arguments. For example `mode` can be
 /// "mir-opt" and `suite` can be something like "debuginfo".
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct Compiletest {
     /// The compiler that we're testing.
     test_compiler: Compiler,
@@ -2373,13 +2363,36 @@ struct Compiletest {
     suite: &'static str,
     path: &'static str,
     compare_mode: Option<&'static str>,
-    /// When true, passes `-Cinstrument-coverage` and `-Csymbol-mangling-version=v0`
-    /// to compiletest so every rustc invocation writes profraw data.
-    instrument: bool,
-    /// Replaces the default `try_run_tests` call when set. Used by `CompilerCoverage` to
-    /// inject per-test profraw merging without changing normal test runs. `None` means
-    /// the default `try_run_tests` is used.
-    run_tests_fn: Option<fn(&Builder<'_>, &mut BootstrapCommand, bool, RecordFailedTests) -> bool>,
+    /// Which function actually runs the test binary. `Default` is the normal
+    /// path (`try_run_tests`); `Coverage` is used by `CompilerCoverage` to also
+    /// merge each test's profraw into the running profdata as it finishes.
+    ///
+    /// This is a plain enum instead of a stored `fn` pointer so `Compiletest`
+    /// can derive `PartialEq`/`Hash` correctly -- comparing function pointers
+    /// by address doesn't express real identity, and bootstrap uses these
+    /// derives as a cache key to dedupe repeated `Step`s.
+    run_tests_fn: TestRunnerKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum TestRunnerKind {
+    Default,
+    Coverage,
+}
+
+impl TestRunnerKind {
+    fn run(
+        self,
+        builder: &Builder<'_>,
+        cmd: &mut BootstrapCommand,
+        stream: bool,
+        record_failed_tests: RecordFailedTests,
+    ) -> bool {
+        match self {
+            TestRunnerKind::Default => crate::utils::render_tests::try_run_tests(builder, cmd, stream, record_failed_tests),
+            TestRunnerKind::Coverage => coverage_run_tests(builder, cmd, stream, record_failed_tests),
+        }
+    }
 }
 
 impl std::fmt::Debug for Compiletest {
@@ -2391,34 +2404,8 @@ impl std::fmt::Debug for Compiletest {
             .field("suite", &self.suite)
             .field("path", &self.path)
             .field("compare_mode", &self.compare_mode)
-            .field("instrument", &self.instrument)
+            .field("run_tests_fn", &self.run_tests_fn)
             .finish()
-    }
-}
-
-impl PartialEq for Compiletest {
-    fn eq(&self, other: &Self) -> bool {
-        self.test_compiler == other.test_compiler
-            && self.target == other.target
-            && self.mode == other.mode
-            && self.suite == other.suite
-            && self.path == other.path
-            && self.compare_mode == other.compare_mode
-            && self.instrument == other.instrument
-    }
-}
-
-impl Eq for Compiletest {}
-
-impl std::hash::Hash for Compiletest {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.test_compiler.hash(state);
-        self.target.hash(state);
-        self.mode.hash(state);
-        self.suite.hash(state);
-        self.path.hash(state);
-        self.compare_mode.hash(state);
-        self.instrument.hash(state);
     }
 }
 
@@ -3100,12 +3087,7 @@ Please disable assertions with `rust.debug-assertions = false`.
             target,
             test_compiler.stage,
         );
-        self.run_tests_fn.unwrap_or(try_run_tests)(
-            builder,
-            &mut cmd,
-            false,
-            record_failed_tests.clone(),
-        );
+        self.run_tests_fn.run(builder, &mut cmd, false, record_failed_tests.clone());
 
         if let Some(compare_mode) = compare_mode {
             cmd.arg("--compare-mode").arg(compare_mode);
@@ -3128,7 +3110,7 @@ Please disable assertions with `rust.debug-assertions = false`.
                 suite, mode, compare_mode, test_compiler.host, target
             ));
             let _time = helpers::timeit(builder);
-            self.run_tests_fn.unwrap_or(try_run_tests)(builder, &mut cmd, false, record_failed_tests);
+            self.run_tests_fn.run(builder, &mut cmd, false, record_failed_tests);
         }
     }
 
