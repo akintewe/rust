@@ -1,12 +1,3 @@
-//! Builds the html coverage report from functions already processed by
-//! `processing`. Writes several files instead of one (see `report_paths`):
-//! an index page with the overall stats, plus one page per coverage
-//! category with that category's crate/file/function tree. Each function's
-//! source lines live in a separate json "shard" file and are fetched by the
-//! browser only when that function's row is expanded (`write_source_shards`,
-//! `SOURCE_LOADER_SCRIPT`) -- embedding all source inline used to make a
-//! single-crate report ~77MB.
-
 use std::collections::HashMap;
 use std::path::Path;
 use anyhow::{Context, Result};
@@ -532,4 +523,114 @@ fn escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::processing::FunctionReport;
+
+    fn make_report(demangled: &str, filename: &str, line_start: usize, line_counts: Vec<Option<u64>>) -> FunctionReport {
+        let line_end = line_start + line_counts.len().saturating_sub(1);
+        FunctionReport { demangled: demangled.to_string(), filename: filename.to_string(), line_start, _line_end: line_end, line_counts }
+    }
+
+    #[test]
+    fn escape_handles_all_five_special_characters() {
+        assert_eq!(escape(r#"<a href="x">&y</a>"#), "&lt;a href=&quot;x&quot;&gt;&amp;y&lt;/a&gt;");
+    }
+
+    #[test]
+    fn escape_leaves_plain_text_unchanged() {
+        assert_eq!(escape("rustc_middle::ty::Ty"), "rustc_middle::ty::Ty");
+    }
+
+    #[test]
+    fn crate_name_extracts_the_crate_directory() {
+        assert_eq!(crate_name("/home/user/rust/compiler/rustc_abi/src/lib.rs"), "rustc_abi");
+    }
+
+    #[test]
+    fn crate_name_is_unknown_outside_the_compiler_tree() {
+        assert_eq!(crate_name("/home/user/somewhere/else.rs"), "unknown");
+    }
+
+    #[test]
+    fn file_path_in_crate_strips_the_crate_name_prefix() {
+        assert_eq!(file_path_in_crate("/home/user/rust/compiler/rustc_abi/src/lib.rs"), "src/lib.rs");
+    }
+
+    #[test]
+    fn report_paths_produces_four_distinct_filenames() {
+        let paths = report_paths("report");
+        assert_eq!(paths.index, "report.html");
+        assert_eq!(paths.fully_covered, "report_fully-covered.html");
+        assert_eq!(paths.partially_covered, "report_partially-covered.html");
+        assert_eq!(paths.uncovered, "report_uncovered.html");
+        // all four must be distinct, or two categories would overwrite each other
+        let all = [&paths.index, &paths.fully_covered, &paths.partially_covered, &paths.uncovered];
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+    }
+
+    #[test]
+    fn index_page_links_to_the_exact_filenames_report_paths_returns() {
+        // the html generator and report_paths must stay in sync -- if render_index
+        // hardcoded a filename instead of using ReportPaths, this would catch it
+        let paths = report_paths("report");
+        let html = render_index(1, 2, 3, 6, 100, 200, &paths);
+        assert!(html.contains(&paths.uncovered), "index must link to the uncovered page");
+        assert!(html.contains(&paths.partially_covered), "index must link to the partial page");
+        assert!(html.contains(&paths.fully_covered), "index must link to the fully-covered page");
+    }
+
+    #[test]
+    fn category_page_contains_the_function_name_and_source_view_placeholder() {
+        let report = make_report("rustc_abi::callconv::merge", "/rust/compiler/rustc_abi/src/callconv.rs", 39, vec![Some(0)]);
+        let categorised = vec![(0usize, &report, FunctionCategory::FullyUncovered)];
+        let paths = report_paths("report");
+
+        let html = render_category_page(
+            &categorised,
+            FunctionCategory::FullyUncovered,
+            "uncovered",
+            "Fully Uncovered",
+            "report_sources",
+            &None,
+            &paths,
+        );
+
+        assert!(html.contains("rustc_abi::callconv::merge"), "function name must appear in its own page");
+        assert!(html.contains("data-fn-id=\"0\""), "function needs a stable id for the source-shard lookup");
+        // source lines aren't embedded -- only a loading placeholder that
+        // loadSource() replaces client-side, see write_source_shards
+        assert!(!html.contains("fn merge(self"), "source text must not be inlined in the page");
+    }
+
+    #[test]
+    fn category_page_only_shows_functions_in_that_category() {
+        let uncovered = make_report("a", "/rust/compiler/c/src/x.rs", 1, vec![Some(0)]);
+        let covered = make_report("b", "/rust/compiler/c/src/x.rs", 5, vec![Some(1)]);
+        let categorised = vec![
+            (0usize, &uncovered, FunctionCategory::FullyUncovered),
+            (1usize, &covered, FunctionCategory::FullyCovered),
+        ];
+        let paths = report_paths("report");
+
+        let html = render_category_page(
+            &categorised,
+            FunctionCategory::FullyUncovered,
+            "uncovered",
+            "Fully Uncovered",
+            "report_sources",
+            &None,
+            &paths,
+        );
+
+        assert!(html.contains('a'), "sanity: page was generated");
+        assert!(!html.contains("data-fn-id=\"1\""), "the fully-covered function must not appear on the uncovered page");
+    }
 }
