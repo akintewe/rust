@@ -994,6 +994,28 @@ impl Step for StdarchVerify {
     }
 }
 
+/// Where `CompilerCoverage` reads and writes its intermediate and output
+/// files, all under `builder.out/coverage/`. Centralized here since both
+/// `CompilerCoverage::run` and `coverage_run_tests` need the same paths.
+struct CoveragePaths {
+    profraw_dir: PathBuf,
+    profdata_path: PathBuf,
+    coverage_json_path: PathBuf,
+    html_path: PathBuf,
+}
+
+impl CoveragePaths {
+    fn new(builder: &Builder<'_>) -> Self {
+        let dir = builder.out.join("coverage");
+        CoveragePaths {
+            profraw_dir: dir.join("profraws"),
+            profdata_path: dir.join("combined.profdata"),
+            coverage_json_path: dir.join("coverage.json"),
+            html_path: dir.join("report.html"),
+        }
+    }
+}
+
 /// Collects LLVM coverage of the Rust compiler by running the UI test suite
 /// with an instrumented stage1 rustc and merging profraw files as each test finishes.
 /// Invoked via `./x run compiler-coverage`.
@@ -1023,11 +1045,11 @@ impl Step for CompilerCoverage {
         // Start from a clean profraw directory so `combined.profdata` only
         // reflects this run, not leftover `.profraw` files from a previous
         // `compiler-coverage` invocation.
-        let profraw_dir = builder.out.join("coverage").join("profraws");
-        if profraw_dir.exists() {
-            t!(fs::remove_dir_all(&profraw_dir));
+        let paths = CoveragePaths::new(builder);
+        if paths.profraw_dir.exists() {
+            t!(fs::remove_dir_all(&paths.profraw_dir));
         }
-        t!(fs::create_dir_all(&profraw_dir));
+        t!(fs::create_dir_all(&paths.profraw_dir));
 
         builder.info("Collecting compiler coverage (UI test suite)");
 
@@ -1101,15 +1123,13 @@ impl Step for CompilerCoverage {
             run_tests_fn: TestRunnerKind::Coverage,
         });
 
-        let profdata_path = builder.out.join("coverage").join("combined.profdata");
-        builder.info(&format!("Coverage profdata written to {}", profdata_path.display()));
+        builder.info(&format!("Coverage profdata written to {}", paths.profdata_path.display()));
 
         // Export the merged profdata to llvm-cov's JSON format, then feed that into
         // compiler-coverage-tool to produce a browsable HTML report -- so running
         // `./x coverage` alone is enough, no separate manual step afterward.
         let llvm_cov = builder.llvm_out(builder.config.host_target).join("bin").join("llvm-cov");
-        let export_json_path = builder.out.join("coverage").join("coverage.json");
-        let html_path = builder.out.join("coverage").join("report.html");
+
 
         // `builder.rustc(compiler)` is a thin wrapper binary -- almost all of
         // rustc's actual code lives in librustc_driver, so llvm-cov needs that
@@ -1132,7 +1152,7 @@ impl Step for CompilerCoverage {
         export_cmd
             .arg("export")
             .arg("--format=text")
-            .arg(format!("--instr-profile={}", profdata_path.display()))
+            .arg(format!("--instr-profile={}", paths.profdata_path.display()))
             .arg(builder.rustc(compiler));
         if let Some(driver_lib) = &driver_lib {
             export_cmd.arg("--object").arg(driver_lib);
@@ -1146,8 +1166,8 @@ impl Step for CompilerCoverage {
         let export = export_cmd.output();
         match export {
             Ok(out) if out.status.success() => {
-                if let Err(e) = fs::write(&export_json_path, &out.stdout) {
-                    builder.info(&format!("coverage: failed to write {}: {e}", export_json_path.display()));
+                if let Err(e) = fs::write(&paths.coverage_json_path, &out.stdout) {
+                    builder.info(&format!("coverage: failed to write {}: {e}", paths.coverage_json_path.display()));
                 }
             }
             Ok(out) => {
@@ -1166,13 +1186,13 @@ impl Step for CompilerCoverage {
         builder.info("Building HTML coverage report");
         let tool_path = builder.tool_exe(crate::core::build_steps::tool::Tool::CompilerCoverageTool);
         let report = std::process::Command::new(&tool_path)
-            .arg(&export_json_path)
+            .arg(&paths.coverage_json_path)
             .arg(&builder.src)
-            .arg(&html_path)
+            .arg(&paths.html_path)
             .output();
         match report {
             Ok(out) if out.status.success() => {
-                builder.info(&format!("Coverage report written to {}", html_path.display()));
+                builder.info(&format!("Coverage report written to {}", paths.html_path.display()));
             }
             Ok(out) => {
                 builder.info(&format!(
@@ -1198,14 +1218,11 @@ fn coverage_run_tests(
     stream: bool,
     record_failed_tests: RecordFailedTests,
 ) -> bool {
-    // Paths for coverage output — derived from builder.out the same way
-    // CompilerCoverage::run sets them up.
-    let profraw_dir = builder.out.join("coverage").join("profraws");
-    let profdata_path = builder.out.join("coverage").join("combined.profdata");
+    let paths = CoveragePaths::new(builder);
     let llvm_profdata =
         builder.llvm_out(builder.config.host_target).join("bin").join("llvm-profdata");
 
-    cmd.env("LLVM_PROFILE_FILE", profraw_dir.join("rustc_%m_%p.profraw").as_os_str());
+    cmd.env("LLVM_PROFILE_FILE", paths.profraw_dir.join("rustc_%m_%p.profraw").as_os_str());
 
     // Always force-rerun tests when collecting coverage. Without this,
     // compiletest skips up-to-date tests and they never write profraw
@@ -1234,8 +1251,8 @@ fn coverage_run_tests(
     // blocking test-output rendering while a merge runs.
     let (finished_tx, finished_rx) = std::sync::mpsc::channel::<()>();
 
-    let merge_profraw_dir = profraw_dir.clone();
-    let merge_profdata_path = profdata_path.clone();
+    let merge_profraw_dir = paths.profraw_dir.clone();
+    let merge_profdata_path = paths.profdata_path.clone();
     let merge_llvm_profdata = llvm_profdata.clone();
     let merge_thread = std::thread::spawn(move || {
         let do_merge = || {
@@ -1304,7 +1321,7 @@ fn coverage_run_tests(
     // at least one profraw when it runs. That check still needs the directory read,
     // so it stays here rather than moving into the batched merge thread.
     let on_test_finished = move |test_name: &str| {
-        let has_profraw = fs::read_dir(&profraw_dir)
+        let has_profraw = fs::read_dir(&paths.profraw_dir)
             .map(|entries| {
                 entries
                     .filter_map(|e| e.ok())
