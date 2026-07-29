@@ -241,6 +241,7 @@ fn merge_monomorphizations(reports: Vec<FunctionReport>) -> Vec<FunctionReport> 
     groups.into_values().collect()
 }
 
+#[cfg(test)]
 fn make_report(demangled: &str, filename: &str, line_start: usize, line_counts: Vec<Option<u64>>) -> FunctionReport {
     let line_end = line_start + line_counts.len().saturating_sub(1);
     FunctionReport {
