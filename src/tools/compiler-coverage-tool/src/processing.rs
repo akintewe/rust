@@ -1,3 +1,10 @@
+//! Turns llvm-cov's raw per-monomorphization function list into one entry
+//! per real source-level function. Two things get collapsed here that would
+//! otherwise make the report noisy or wrong: generic functions show up once
+//! per instantiation (`merge_monomorphizations`), and closures show up as
+//! their own separate functions instead of counting toward the function
+//! they're defined in (`merge_closures`).
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};

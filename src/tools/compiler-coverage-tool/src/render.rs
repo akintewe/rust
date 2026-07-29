@@ -1,3 +1,12 @@
+//! Builds the html coverage report from functions already processed by
+//! `processing`. Writes several files instead of one (see `report_paths`):
+//! an index page with the overall stats, plus one page per coverage
+//! category with that category's crate/file/function tree. Each function's
+//! source lines live in a separate json "shard" file and are fetched by the
+//! browser only when that function's row is expanded (`write_source_shards`,
+//! `SOURCE_LOADER_SCRIPT`) -- embedding all source inline used to make a
+//! single-crate report ~77MB.
+
 use std::collections::HashMap;
 use std::path::Path;
 use anyhow::{Context, Result};

@@ -1,3 +1,21 @@
+//! Turns an `llvm-cov export` json file into a browsable html coverage
+//! report for the Rust compiler itself. Used by `./x run compiler-coverage`
+//! (see `CompilerCoverage` in bootstrap) after it runs the test suite with
+//! an instrumented rustc and merges the resulting profraws.
+//!
+//! Three stages, in `processing`, then here in `main`, then in `render`:
+//!   1. `processing::process` parses the json, keeps only rustc's own
+//!      functions, and merges monomorphizations/closures into one entry
+//!      per real function (see that module for why).
+//!   2. `main` sorts the merged functions into fully covered / partially
+//!      covered / fully uncovered, and works out shared state (github
+//!      links, output paths) both stages need.
+//!   3. `render` writes it all out: one json "shard" per function's source
+//!      lines (loaded lazily by the html, not embedded, see
+//!      `render::write_source_shards`), and an index page plus one page per
+//!      category (see `render::render_index` / `render::render_category_page`)
+//!      instead of a single html file with every function in the compiler.
+
 use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
