@@ -855,6 +855,7 @@ name = "compiler-coverage-tool"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "askama",
  "rustc-demangle",
  "serde",
  "serde_json",

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use anyhow::{Context, Result};
+use askama::Template;
 use serde::Serialize;
 
 use crate::processing::{FunctionCategory, FunctionReport};
@@ -253,21 +254,6 @@ function onSearch(val) {
 }
 "#;
 
-fn html_head(title: &str) -> String {
-    format!(
-        r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>{title}</title>
-<style>{STYLE}</style>
-</head>
-<body>
-"#,
-        title = escape(title),
-    )
-}
-
 /// Filenames for the report: one index page plus one page per coverage
 /// category, so opening the report doesn't load a single html file with
 /// every function in the compiler in it. `base_name` is the output file's
@@ -288,6 +274,21 @@ pub fn report_paths(base_name: &str) -> ReportPaths {
     }
 }
 
+#[derive(Template)]
+#[template(path = "index.html")]
+struct IndexTemplate<'a> {
+    style: &'static str,
+    overall_pct: String,
+    covered_lines_total: usize,
+    tracked_lines_total: usize,
+    uncovered_path: &'a str,
+    partial_path: &'a str,
+    fully_path: &'a str,
+    uncovered_count: usize,
+    partial_count: usize,
+    fully_count: usize,
+}
+
 /// Small overview page: overall stats and links to the three category
 /// pages. Kept separate from the category pages themselves so opening the
 /// report doesn't pull in the full function tree just to see the summary.
@@ -299,36 +300,42 @@ pub fn render_index(
     covered_lines_total: usize,
     tracked_lines_total: usize,
     paths: &ReportPaths,
-) -> String {
-    let overall_pct = pct(covered_lines_total, tracked_lines_total);
-    let mut out = html_head("Rust Compiler Coverage Report");
-
-    out.push_str(&format!(
-        r#"<div class="header">
-  <h1>Rust Compiler Coverage Report</h1>
-  <div class="overall">{overall_pct:.2}% ({covered_lines_total}/{tracked_lines_total} lines)</div>
-  <div class="overall-sub">Pick a category below to browse functions in the compiler.</div>
-</div>
-<ul class="category-list">
-  <li><a class="uncovered" href="{uncovered_path}">Fully Uncovered <span class="pct">{uncovered_count} functions</span></a></li>
-  <li><a class="partial" href="{partial_path}">Partially Covered <span class="pct">{partial_count} functions</span></a></li>
-  <li><a class="fully" href="{fully_path}">Fully Covered <span class="pct">{fully_count} functions</span></a></li>
-</ul>
-"#,
-        overall_pct = overall_pct,
-        covered_lines_total = covered_lines_total,
-        tracked_lines_total = tracked_lines_total,
-        uncovered_path = escape(&paths.uncovered),
-        partial_path = escape(&paths.partially_covered),
-        fully_path = escape(&paths.fully_covered),
-        uncovered_count = uncovered_count,
-        partial_count = partial_count,
-        fully_count = fully_count,
-    ));
+) -> Result<String> {
     let _ = total;
+    let template = IndexTemplate {
+        style: STYLE,
+        overall_pct: format!("{:.2}", pct(covered_lines_total, tracked_lines_total)),
+        covered_lines_total,
+        tracked_lines_total,
+        uncovered_path: &paths.uncovered,
+        partial_path: &paths.partially_covered,
+        fully_path: &paths.fully_covered,
+        uncovered_count,
+        partial_count,
+        fully_count,
+    };
+    Ok(template.render()?)
+}
 
-    out.push_str("</body></html>\n");
-    out
+#[derive(Template)]
+#[template(path = "category.html")]
+struct CategoryTemplate<'a> {
+    style: &'static str,
+    search_script: &'static str,
+    source_loader_script: &'static str,
+    label: &'a str,
+    this_count: usize,
+    cat_class: &'a str,
+    index_path: &'a str,
+    uncovered_path: &'a str,
+    partial_path: &'a str,
+    fully_path: &'a str,
+    uncovered_active: bool,
+    partial_active: bool,
+    fully_active: bool,
+    shard_count: usize,
+    shard_dir_name: &'a str,
+    crates: Vec<CrateGroup>,
 }
 
 /// One category's crate/file/function tree (e.g. just the fully-uncovered
@@ -343,156 +350,166 @@ pub fn render_category_page(
     shard_dir_name: &str,
     github_base: &Option<String>,
     paths: &ReportPaths,
-) -> String {
+) -> Result<String> {
     let this_count = categorised.iter().filter(|(_, _, c)| *c == cat_variant).count();
-    let mut out = html_head(&format!("{label} - Rust Compiler Coverage Report"));
-
-    out.push_str(&format!(
-        r#"<div class="header">
-  <h1><a href="{index_path}">Rust Compiler Coverage Report</a></h1>
-  <div class="overall">{label}: {this_count} functions</div>
-</div>
-<div class="filter-bar">
-  <span>Other categories:</span>
-  <a class="btn-uncovered{uncovered_active}" href="{uncovered_path}">Fully Uncovered</a>
-  <a class="btn-partial{partial_active}" href="{partial_path}">Partially Covered</a>
-  <a class="btn-fully{fully_active}" href="{fully_path}">Fully Covered</a>
-</div>
-<div class="search-bar">
-  <input type="text" placeholder="Search functions or file paths..." oninput="onSearch(this.value)" />
-  <span class="search-count" id="search-count"></span>
-</div>
-<script>
-var SHARD_COUNT = {shard_count};
-var SHARD_DIR = '{shard_dir_name}';
-{search_script}
-{source_loader_script}
-</script>
-"#,
-        index_path = escape(&paths.index),
-        label = escape(label),
-        this_count = this_count,
-        uncovered_active = if cat_class == "uncovered" { " active" } else { "" },
-        partial_active = if cat_class == "partial" { " active" } else { "" },
-        fully_active = if cat_class == "fully" { " active" } else { "" },
-        uncovered_path = escape(&paths.uncovered),
-        partial_path = escape(&paths.partially_covered),
-        fully_path = escape(&paths.fully_covered),
-        shard_count = SHARD_COUNT,
-        shard_dir_name = shard_dir_name,
-        search_script = SEARCH_SCRIPT,
-        source_loader_script = SOURCE_LOADER_SCRIPT,
-    ));
 
     let section_fns: Vec<&(usize, &FunctionReport, FunctionCategory)> = categorised
         .iter()
         .filter(|(_, _, cat)| *cat == cat_variant)
         .collect();
 
+    let crates = group_by_crate_and_file(&section_fns, cat_variant, github_base);
+
+    let template = CategoryTemplate {
+        style: STYLE,
+        search_script: SEARCH_SCRIPT,
+        source_loader_script: SOURCE_LOADER_SCRIPT,
+        label,
+        this_count,
+        cat_class,
+        index_path: &paths.index,
+        uncovered_path: &paths.uncovered,
+        partial_path: &paths.partially_covered,
+        fully_path: &paths.fully_covered,
+        uncovered_active: cat_class == "uncovered",
+        partial_active: cat_class == "partial",
+        fully_active: cat_class == "fully",
+        shard_count: SHARD_COUNT,
+        shard_dir_name,
+        crates,
+    };
+    Ok(template.render()?)
+}
+
+struct FnRow {
+    fn_id: usize,
+    fn_name: String,
+    badge_class: &'static str,
+    badge_text: String,
+    // Pre-built <a> tag (or plain text) linking to the function's source --
+    // built once here since it's conditional on github_base, then rendered
+    // with `|safe` since its pieces are already escaped below.
+    file_line_html: String,
+}
+
+struct FileGroup {
+    file: String,
+    count: usize,
+    fns: Vec<FnRow>,
+}
+
+struct CrateGroup {
+    krate: String,
+    count: usize,
+    files: Vec<FileGroup>,
+}
+
+/// Groups one category's functions into a crate -> file -> function tree
+/// for the template to walk. Kept separate from rendering so the grouping
+/// logic can be tested without going through askama.
+fn group_by_crate_and_file(
+    section_fns: &[&(usize, &FunctionReport, FunctionCategory)],
+    cat_variant: FunctionCategory,
+    github_base: &Option<String>,
+) -> Vec<CrateGroup> {
     let mut seen_crates: Vec<String> = vec![];
-    for (_, report, _) in &section_fns {
+    for (_, report, _) in section_fns {
         let krate = crate_name(&report.filename);
         if !seen_crates.contains(&krate) {
             seen_crates.push(krate);
         }
     }
 
-    for krate in &seen_crates {
-        let krate_fns: Vec<&&(usize, &FunctionReport, FunctionCategory)> = section_fns
-            .iter()
-            .filter(|(_, r, _)| &crate_name(&r.filename) == krate)
-            .collect();
-        let krate_count = krate_fns.len();
-
-        out.push_str(&format!(
-            "<details class=\"crate-group\"><summary class=\"crate-header\">{krate} <span class=\"crate-count\">({krate_count})</span></summary>\n",
-            krate = escape(krate),
-            krate_count = krate_count,
-        ));
-
-        // nest by file path within the crate
-        let mut seen_files: Vec<String> = vec![];
-        for (_, report, _) in &krate_fns {
-            let f = file_path_in_crate(&report.filename);
-            if !seen_files.contains(&f) { seen_files.push(f); }
-        }
-
-        for file in &seen_files {
-            let file_fns: Vec<&&&(usize, &FunctionReport, FunctionCategory)> = krate_fns
+    seen_crates
+        .into_iter()
+        .map(|krate| {
+            let krate_fns: Vec<&&(usize, &FunctionReport, FunctionCategory)> = section_fns
                 .iter()
-                .filter(|(_, r, _)| &file_path_in_crate(&r.filename) == file)
+                .filter(|(_, r, _)| crate_name(&r.filename) == krate)
                 .collect();
-            let file_count = file_fns.len();
 
-            out.push_str(&format!(
-                "<details class=\"file-group\"><summary class=\"file-header\">{file} <span class=\"crate-count\">({file_count})</span></summary>\n<div class=\"fn-list\">\n",
-                file = escape(file),
-                file_count = file_count,
-            ));
-
-            for (fn_id, report, _) in &file_fns {
-                let short_filename = if let Some(idx) = report.filename.find("/compiler/") {
-                    &report.filename[idx + 1..]
-                } else {
-                    &report.filename
-                };
-
-                let covered_lines = report.line_counts.iter().filter(|c| c.map_or(false, |n| n > 0)).count();
-                let total_tracked = report.line_counts.iter().filter(|c| c.is_some()).count();
-                let fn_pct = if total_tracked > 0 { pct(covered_lines, total_tracked) } else { 100.0 };
-
-                let (badge_class, badge_text) = match cat_variant {
-                    FunctionCategory::FullyCovered => ("badge-fully", "100% covered".to_string()),
-                    FunctionCategory::PartiallyCovered => ("badge-partial", format!("{fn_pct:.0}% covered")),
-                    FunctionCategory::FullyUncovered => ("badge-uncovered", "0% covered".to_string()),
-                };
-
-                // Source lines load lazily from a JSON shard when this <details>
-                // is first opened -- see loadSource() in SOURCE_LOADER_SCRIPT.
-                // Embedding every function's source inline made reports ~77MB;
-                // this keeps each page to just the collapsed summary rows.
-                //
-                // The file:line label links out to GitHub (using the origin
-                // remote and commit the report was built from) when one was
-                // found, so a maintainer can jump straight to real context
-                // around the function instead of the isolated lines shown here.
-                let file_line_html = match github_base {
-                    Some(base) => format!(
-                        r#"<a href="{base}/{path}#L{line}" target="_blank" rel="noopener">{short_file}:{line_start}</a>"#,
-                        base = base,
-                        path = escape(short_filename),
-                        line = report.line_start,
-                        short_file = escape(short_filename),
-                        line_start = report.line_start,
-                    ),
-                    None => format!("{}:{}", escape(short_filename), report.line_start),
-                };
-
-                out.push_str(&format!(
-                    r#"<div class="fn-block cat-{cat_class}">
-<details data-fn-id="{fn_id}" ontoggle="loadSource(this)">
-<summary><span class="fn-name">{fn_name}</span><span class="fn-badge {badge_class}">{badge_text}</span></summary>
-<div class="fn-file">{file_line_html}</div>
-<div class="source-view"><table class="src"><tbody class="src-body"><tr><td class="code src-loading">loading...</td></tr></tbody></table></div>
-</details></div>
-"#,
-                    cat_class = cat_class,
-                    fn_id = fn_id,
-                    fn_name = escape(&report.demangled),
-                    file_line_html = file_line_html,
-                    badge_class = badge_class,
-                    badge_text = badge_text,
-                ));
+            let mut seen_files: Vec<String> = vec![];
+            for (_, report, _) in &krate_fns {
+                let f = file_path_in_crate(&report.filename);
+                if !seen_files.contains(&f) {
+                    seen_files.push(f);
+                }
             }
 
-            out.push_str("</div></details>\n"); // close file-group
-        }
+            let files = seen_files
+                .into_iter()
+                .map(|file| {
+                    let file_fns: Vec<&&&(usize, &FunctionReport, FunctionCategory)> = krate_fns
+                        .iter()
+                        .filter(|(_, r, _)| file_path_in_crate(&r.filename) == file)
+                        .collect();
 
-        out.push_str("</details>\n"); // close crate-group
+                    let fns = file_fns
+                        .iter()
+                        .map(|(fn_id, report, _)| {
+                            build_fn_row(*fn_id, report, cat_variant, github_base)
+                        })
+                        .collect::<Vec<_>>();
+
+                    FileGroup { count: fns.len(), file, fns }
+                })
+                .collect::<Vec<_>>();
+
+            CrateGroup { count: krate_fns.len(), krate, files }
+        })
+        .collect()
+}
+
+fn build_fn_row(
+    fn_id: usize,
+    report: &FunctionReport,
+    cat_variant: FunctionCategory,
+    github_base: &Option<String>,
+) -> FnRow {
+    let short_filename = if let Some(idx) = report.filename.find("/compiler/") {
+        &report.filename[idx + 1..]
+    } else {
+        &report.filename
+    };
+
+    let covered_lines = report.line_counts.iter().filter(|c| c.map_or(false, |n| n > 0)).count();
+    let total_tracked = report.line_counts.iter().filter(|c| c.is_some()).count();
+    let fn_pct = if total_tracked > 0 { pct(covered_lines, total_tracked) } else { 100.0 };
+
+    let (badge_class, badge_text) = match cat_variant {
+        FunctionCategory::FullyCovered => ("badge-fully", "100% covered".to_string()),
+        FunctionCategory::PartiallyCovered => ("badge-partial", format!("{fn_pct:.0}% covered")),
+        FunctionCategory::FullyUncovered => ("badge-uncovered", "0% covered".to_string()),
+    };
+
+    // Source lines load lazily from a JSON shard when this <details> is
+    // first opened -- see loadSource() in SOURCE_LOADER_SCRIPT. Embedding
+    // every function's source inline made reports ~77MB; this keeps each
+    // page to just the collapsed summary rows.
+    //
+    // The file:line label links out to GitHub (using the origin remote and
+    // commit the report was built from) when one was found, so a maintainer
+    // can jump straight to real context around the function instead of the
+    // isolated lines shown here.
+    let file_line_html = match github_base {
+        Some(base) => format!(
+            r#"<a href="{base}/{path}#L{line}" target="_blank" rel="noopener">{short_file}:{line_start}</a>"#,
+            base = base,
+            path = html_escape(short_filename),
+            line = report.line_start,
+            short_file = html_escape(short_filename),
+            line_start = report.line_start,
+        ),
+        None => format!("{}:{}", html_escape(short_filename), report.line_start),
+    };
+
+    FnRow {
+        fn_id,
+        fn_name: report.demangled.clone(),
+        badge_class,
+        badge_text,
+        file_line_html,
     }
-
-    out.push_str("</body></html>\n");
-    out
 }
 
 fn crate_name(filename: &str) -> String {
@@ -518,7 +535,10 @@ fn pct(n: usize, total: usize) -> f64 {
     if total == 0 { 0.0 } else { n as f64 / total as f64 * 100.0 }
 }
 
-fn escape(s: &str) -> String {
+// Manual escaping for the pre-built anchor fragment in build_fn_row --
+// askama auto-escapes everything else, but that fragment is assembled as a
+// raw string and rendered with `|safe` since it needs to stay a real <a> tag.
+fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -536,13 +556,8 @@ mod tests {
     }
 
     #[test]
-    fn escape_handles_all_five_special_characters() {
-        assert_eq!(escape(r#"<a href="x">&y</a>"#), "&lt;a href=&quot;x&quot;&gt;&amp;y&lt;/a&gt;");
-    }
-
-    #[test]
-    fn escape_leaves_plain_text_unchanged() {
-        assert_eq!(escape("rustc_middle::ty::Ty"), "rustc_middle::ty::Ty");
+    fn html_escape_handles_all_four_special_characters() {
+        assert_eq!(html_escape(r#"<a href="x">&y</a>"#), "&lt;a href=&quot;x&quot;&gt;&amp;y&lt;/a&gt;");
     }
 
     #[test]
@@ -581,7 +596,7 @@ mod tests {
         // the html generator and report_paths must stay in sync -- if render_index
         // hardcoded a filename instead of using ReportPaths, this would catch it
         let paths = report_paths("report");
-        let html = render_index(1, 2, 3, 6, 100, 200, &paths);
+        let html = render_index(1, 2, 3, 6, 100, 200, &paths).unwrap();
         assert!(html.contains(&paths.uncovered), "index must link to the uncovered page");
         assert!(html.contains(&paths.partially_covered), "index must link to the partial page");
         assert!(html.contains(&paths.fully_covered), "index must link to the fully-covered page");
@@ -601,7 +616,7 @@ mod tests {
             "report_sources",
             &None,
             &paths,
-        );
+        ).unwrap();
 
         assert!(html.contains("rustc_abi::callconv::merge"), "function name must appear in its own page");
         assert!(html.contains("data-fn-id=\"0\""), "function needs a stable id for the source-shard lookup");
@@ -628,7 +643,7 @@ mod tests {
             "report_sources",
             &None,
             &paths,
-        );
+        ).unwrap();
 
         assert!(html.contains('a'), "sanity: page was generated");
         assert!(!html.contains("data-fn-id=\"1\""), "the fully-covered function must not appear on the uncovered page");

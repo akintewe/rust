@@ -110,7 +110,7 @@ fn main() -> Result<()> {
                 covered_lines_total,
                 tracked_lines_total,
                 &paths,
-            ),
+            )?,
         ),
         (
             &paths.uncovered,
@@ -122,7 +122,7 @@ fn main() -> Result<()> {
                 &shard_dir_name,
                 &github_base,
                 &paths,
-            ),
+            )?,
         ),
         (
             &paths.partially_covered,
@@ -134,7 +134,7 @@ fn main() -> Result<()> {
                 &shard_dir_name,
                 &github_base,
                 &paths,
-            ),
+            )?,
         ),
         (
             &paths.fully_covered,
@@ -146,7 +146,7 @@ fn main() -> Result<()> {
                 &shard_dir_name,
                 &github_base,
                 &paths,
-            ),
+            )?,
         ),
     ];
 
