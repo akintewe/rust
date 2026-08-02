@@ -1227,6 +1227,13 @@ impl Config {
         // line tables) to produce a meaningful report, so `rust.coverage` implies a
         // debuginfo level the same way `rust.debug` does, instead of requiring every
         // debuginfo-stripping call site to separately check `rust_coverage`.
+        //
+        // This is only a default: an explicit `rust.debuginfo-level-rustc = "none"`
+        // (or similar) still wins over the coverage-implied level below, since it
+        // goes through `.or(rust_debuginfo_level)` first. That combination silently
+        // produces a coverage build with no usable line tables -- there's no warning
+        // for it today, so double check your debuginfo level if `rust.coverage` isn't
+        // reporting what you expect.
         let rust_coverage =
             flags_rust_coverage || flags_paths.iter().any(|p| p.ends_with("compiler-coverage"));
 

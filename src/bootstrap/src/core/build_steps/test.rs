@@ -1212,6 +1212,11 @@ impl Step for CompilerCoverage {
 /// this just points each rustc invocation at a `.profraw` file via
 /// `LLVM_PROFILE_FILE` and merges the results into `combined.profdata` as
 /// tests finish, batching the merges on a background thread (below).
+// FIXME: this duplicates the streaming/rendering/exit-status logic in
+// try_run_tests (the coverage-specific parts are the LLVM_PROFILE_FILE env
+// var, --force-rerun, and the profraw-merge callback). Worth folding coverage
+// into the normal test runner path once it's clear what the shared shape
+// should look like.
 fn coverage_run_tests(
     builder: &Builder<'_>,
     cmd: &mut BootstrapCommand,
