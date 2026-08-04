@@ -1071,6 +1071,23 @@ fn coverage_run_tests(
     // compiletest's own cache key instead, so untouched tests can stay cached.
     cmd.arg("--force-rerun");
 
+    // These tests do their own PGO run and then read the `.profraw` files back.
+    // `LLVM_PROFILE_FILE` above sends every `.profraw` on the machine into the
+    // coverage directory instead, so the tests find nothing and fail. Skipping
+    // them costs a little coverage of the PGO code paths.
+    for test in [
+        "tests/run-make/optimization-remarks-dir-pgo",
+        "tests/run-make/pgo-branch-weights",
+        "tests/run-make/pgo-embed-bc-lto",
+        "tests/run-make/pgo-gen",
+        "tests/run-make/pgo-gen-lto",
+        "tests/run-make/pgo-indirect-call-promotion",
+        "tests/run-make/pgo-use",
+        "tests/run-make/track-pgo-dep-info",
+    ] {
+        cmd.arg("--skip").arg(test);
+    }
+
     // Merging after every test means one llvm-profdata process per test, each
     // one rewriting the whole profile. Over 20k tests that is a lot of waste.
     const MERGE_BATCH_SIZE: usize = 100;
