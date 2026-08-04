@@ -1327,9 +1327,9 @@ pub fn rustc_cargo(
         ));
     }
 
-    // Every stage gets instrumented. Tying this to one stage means `--stage 2`
-    // quietly hands back a compiler with no coverage in it.
-    if builder.config.rust_coverage {
+    // Only the compiler that actually runs the tests needs instrumenting, and
+    // that is the top stage one. `build_compiler` builds the stage above it.
+    if builder.config.rust_coverage && build_compiler.stage + 1 == builder.top_stage {
         cargo.rustflag("-Cinstrument-coverage");
         cargo.rustflag("-Zcoverage-options=branch");
         // Deliberately not setting `-Ccodegen-units=1` here. It looked like it
