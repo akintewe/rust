@@ -42,9 +42,7 @@ use crate::utils::helpers::{
     dylib_path, dylib_path_var, linker_args, linker_flags, t, target_supports_cranelift_backend,
     up_to_date,
 };
-use crate::utils::render_tests::{
-    Renderer, add_flags_and_try_run_tests, try_run_tests,
-};
+use crate::utils::render_tests::{Renderer, add_flags_and_try_run_tests, try_run_tests};
 use crate::{CLang, CodegenBackendKind, GitRepo, Mode, PathSet, TestTarget, envify};
 
 mod compiletest;
@@ -994,18 +992,17 @@ impl Step for StdarchVerify {
     }
 }
 
-/// Where `CompilerCoverage` reads and writes its intermediate and output
-/// files, all under `builder.out/coverage/`. Centralized here since both
-/// `CompilerCoverage::run` and `coverage_run_tests` need the same paths.
-struct CoveragePaths {
-    profraw_dir: PathBuf,
-    profdata_path: PathBuf,
-    coverage_json_path: PathBuf,
-    html_path: PathBuf,
+/// Files that `./x run compiler-coverage` reads and writes, all under
+/// `build/coverage/`. Kept together so the names are only spelled out once.
+pub(crate) struct CoveragePaths {
+    pub(crate) profraw_dir: PathBuf,
+    pub(crate) profdata_path: PathBuf,
+    pub(crate) coverage_json_path: PathBuf,
+    pub(crate) html_path: PathBuf,
 }
 
 impl CoveragePaths {
-    fn new(builder: &Builder<'_>) -> Self {
+    pub(crate) fn new(builder: &Builder<'_>) -> Self {
         let dir = builder.out.join("coverage");
         CoveragePaths {
             profraw_dir: dir.join("profraws"),
@@ -1016,207 +1013,45 @@ impl CoveragePaths {
     }
 }
 
-/// Collects LLVM coverage of the Rust compiler by running the UI test suite
-/// with an instrumented stage1 rustc and merging profraw files as each test finishes.
-/// Invoked via `./x run compiler-coverage`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct CompilerCoverage {
-    pub compiler: Compiler,
-    pub target: TargetSelection,
-}
+/// Run the test suites that compiler coverage is collected from.
+pub(crate) fn collect_coverage_suites(
+    builder: &Builder<'_>,
+    compiler: Compiler,
+    target: TargetSelection,
+) {
+    // These exercise the compiler broadly. Adding one here makes a coverage
+    // run longer by however long that suite takes on its own.
+    let suites = [
+        (CompiletestMode::Ui, "ui", "tests/ui"),
+        (CompiletestMode::Incremental, "incremental", "tests/incremental"),
+        (CompiletestMode::RunMake, "run-make", "tests/run-make"),
+        (CompiletestMode::RunMake, "run-make-cargo", "tests/run-make-cargo"),
+        (CompiletestMode::Ui, "ui-fulldeps", "tests/ui-fulldeps"),
+        (CompiletestMode::Ui, "crashes", "tests/crashes"),
+    ];
 
-impl Step for CompilerCoverage {
-    type Output = ();
-    const IS_HOST: bool = true;
-
-    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
-        run.alias("compiler-coverage")
-    }
-
-    fn make_run(run: RunConfig<'_>) {
-        let compiler = run.builder.compiler(run.builder.top_stage, run.build_triple());
-        run.builder.ensure(CompilerCoverage { compiler, target: run.target });
-    }
-
-    fn run(self, builder: &Builder<'_>) {
-        let compiler = self.compiler;
-        let target = self.target;
-
-        // Start from a clean profraw directory so `combined.profdata` only
-        // reflects this run, not leftover `.profraw` files from a previous
-        // `compiler-coverage` invocation.
-        let paths = CoveragePaths::new(builder);
-        if paths.profraw_dir.exists() {
-            t!(fs::remove_dir_all(&paths.profraw_dir));
-        }
-        t!(fs::create_dir_all(&paths.profraw_dir));
-
-        builder.info("Collecting compiler coverage (UI test suite)");
-
+    for (mode, suite, path) in suites {
+        builder.info(&format!("Collecting compiler coverage ({suite} test suite)"));
         builder.ensure(Compiletest {
             test_compiler: compiler,
             target,
-            mode: CompiletestMode::Ui,
-            suite: "ui",
-            path: "tests/ui",
+            mode,
+            suite,
+            path,
             compare_mode: None,
             run_tests_fn: TestRunnerKind::Coverage,
         });
-
-        builder.info("Collecting compiler coverage (incremental test suite)");
-
-        builder.ensure(Compiletest {
-            test_compiler: compiler,
-            target,
-            mode: CompiletestMode::Incremental,
-            suite: "incremental",
-            path: "tests/incremental",
-            compare_mode: None,
-            run_tests_fn: TestRunnerKind::Coverage,
-        });
-
-        builder.info("Collecting compiler coverage (run-make test suite)");
-
-        builder.ensure(Compiletest {
-            test_compiler: compiler,
-            target,
-            mode: CompiletestMode::RunMake,
-            suite: "run-make",
-            path: "tests/run-make",
-            compare_mode: None,
-            run_tests_fn: TestRunnerKind::Coverage,
-        });
-
-        builder.info("Collecting compiler coverage (run-make-cargo test suite)");
-
-        builder.ensure(Compiletest {
-            test_compiler: compiler,
-            target,
-            mode: CompiletestMode::RunMake,
-            suite: "run-make-cargo",
-            path: "tests/run-make-cargo",
-            compare_mode: None,
-            run_tests_fn: TestRunnerKind::Coverage,
-        });
-
-        builder.info("Collecting compiler coverage (ui-fulldeps test suite)");
-
-        builder.ensure(Compiletest {
-            test_compiler: compiler,
-            target,
-            mode: CompiletestMode::Ui,
-            suite: "ui-fulldeps",
-            path: "tests/ui-fulldeps",
-            compare_mode: None,
-            run_tests_fn: TestRunnerKind::Coverage,
-        });
-
-        builder.info("Collecting compiler coverage (crashes test suite)");
-
-        builder.ensure(Compiletest {
-            test_compiler: compiler,
-            target,
-            mode: CompiletestMode::Ui,
-            suite: "crashes",
-            path: "tests/crashes",
-            compare_mode: None,
-            run_tests_fn: TestRunnerKind::Coverage,
-        });
-
-        builder.info(&format!("Coverage profdata written to {}", paths.profdata_path.display()));
-
-        // Export the merged profdata to llvm-cov's JSON format, then feed that into
-        // compiler-coverage-tool to produce a browsable HTML report -- so running
-        // `./x coverage` alone is enough, no separate manual step afterward.
-        let llvm_cov = builder.llvm_out(builder.config.host_target).join("bin").join("llvm-cov");
-
-
-        // `builder.rustc(compiler)` is a thin wrapper binary -- almost all of
-        // rustc's actual code lives in librustc_driver, so llvm-cov needs that
-        // as an extra --object to see anything beyond the wrapper's own main().
-        let rustc_libdir = builder.rustc_libdir(compiler);
-        let driver_lib = fs::read_dir(&rustc_libdir).ok().and_then(|entries| {
-            entries
-                .filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .find(|p| {
-                    p.file_name()
-                        .and_then(|n| n.to_str())
-                        .map(|n| n.starts_with("librustc_driver-") && n.ends_with(".so"))
-                        .unwrap_or(false)
-                })
-        });
-
-        builder.info("Exporting coverage to JSON");
-        let mut export_cmd = std::process::Command::new(&llvm_cov);
-        export_cmd
-            .arg("export")
-            .arg("--format=text")
-            .arg(format!("--instr-profile={}", paths.profdata_path.display()))
-            .arg(builder.rustc(compiler));
-        if let Some(driver_lib) = &driver_lib {
-            export_cmd.arg("--object").arg(driver_lib);
-        } else {
-            builder.info(&format!(
-                "coverage: could not find librustc_driver in {}, \
-                 report will be missing most compiler functions",
-                rustc_libdir.display()
-            ));
-        }
-        let export = export_cmd.output();
-        match export {
-            Ok(out) if out.status.success() => {
-                if let Err(e) = fs::write(&paths.coverage_json_path, &out.stdout) {
-                    builder.info(&format!("coverage: failed to write {}: {e}", paths.coverage_json_path.display()));
-                }
-            }
-            Ok(out) => {
-                builder.info(&format!(
-                    "coverage: llvm-cov export failed:\n{}",
-                    String::from_utf8_lossy(&out.stderr)
-                ));
-                return;
-            }
-            Err(e) => {
-                builder.info(&format!("coverage: failed to run llvm-cov: {e}"));
-                return;
-            }
-        }
-
-        builder.info("Building HTML coverage report");
-        let tool_path = builder.tool_exe(crate::core::build_steps::tool::Tool::CompilerCoverageTool);
-        let report = std::process::Command::new(&tool_path)
-            .arg(&paths.coverage_json_path)
-            .arg(&builder.src)
-            .arg(&paths.html_path)
-            .output();
-        match report {
-            Ok(out) if out.status.success() => {
-                builder.info(&format!("Coverage report written to {}", paths.html_path.display()));
-            }
-            Ok(out) => {
-                builder.info(&format!(
-                    "coverage: compiler-coverage-tool failed:\n{}",
-                    String::from_utf8_lossy(&out.stderr)
-                ));
-            }
-            Err(e) => {
-                builder.info(&format!("coverage: failed to run compiler-coverage-tool: {e}"));
-            }
-        }
     }
 }
 
-/// Replacement for `try_run_tests` used by `CompilerCoverage`. The compiler
-/// itself is already built with `-Cinstrument-coverage` (see `compile.rs`) --
-/// this just points each rustc invocation at a `.profraw` file via
-/// `LLVM_PROFILE_FILE` and merges the results into `combined.profdata` as
-/// tests finish, batching the merges on a background thread (below).
-// FIXME: this duplicates the streaming/rendering/exit-status logic in
-// try_run_tests (the coverage-specific parts are the LLVM_PROFILE_FILE env
-// var, --force-rerun, and the profraw-merge callback). Worth folding coverage
-// into the normal test runner path once it's clear what the shared shape
-// should look like.
+/// Run compiletest and merge the coverage that the tests produce.
+///
+/// The compiler is already instrumented by the time we get here, see
+/// `rust_coverage` in `compile.rs`. All this adds is telling it where to put
+/// the `.profraw` files and merging them as tests finish.
+// FIXME: most of this is copied from `try_run_tests`. Only the profile
+// environment variable, `--force-rerun` and the merging are new, so the two
+// should share once it is clear what the common shape looks like.
 fn coverage_run_tests(
     builder: &Builder<'_>,
     cmd: &mut BootstrapCommand,
@@ -1229,31 +1064,20 @@ fn coverage_run_tests(
 
     cmd.env("LLVM_PROFILE_FILE", paths.profraw_dir.join("rustc_%m_%p.profraw").as_os_str());
 
-    // Always force-rerun tests when collecting coverage. Without this,
-    // compiletest skips up-to-date tests and they never write profraw
-    // files, causing false negatives.
+    // A test compiletest skips as up to date writes no coverage, which then
+    // reads as the compiler never running that code at all.
     //
-    // This re-runs the entire suite every time, which is correct but not
-    // free. A better fix would fold coverage into compiletest's actual
-    // cache key so unaffected tests could stay cached. Left as
-    // --force-rerun for now; revisit if coverage run time becomes a
-    // bottleneck.
+    // FIXME: this re-runs everything every time. Coverage ought to be part of
+    // compiletest's own cache key instead, so untouched tests can stay cached.
     cmd.arg("--force-rerun");
 
-    // How many finished tests to accumulate before running an actual merge.
-    // Merging after every single test means spawning an llvm-profdata process
-    // per test, and each merge re-reads/re-writes the whole growing profdata
-    // file -- with 20k+ tests that adds up fast. Batching amortizes the
-    // subprocess and I/O cost across many tests at once.
+    // Merging after every test means one llvm-profdata process per test, each
+    // one rewriting the whole profile. Over 20k tests that is a lot of waste.
     const MERGE_BATCH_SIZE: usize = 100;
 
-    // on_test_finished only fires from render_tests.rs's single reader thread
-    // (compiletest's own parallel test runner serializes results onto one
-    // stdout pipe before we ever see them), so there's no concurrent access
-    // to worry about here. The channel exists to move the actual merge work
-    // off of that thread: the callback stays cheap (send a signal), and this
-    // background thread does the batched llvm-profdata calls without
-    // blocking test-output rendering while a merge runs.
+    // Results all arrive on one thread, so this is not about races. The
+    // channel is here to keep merging off that thread, since otherwise test
+    // output stops scrolling every time a merge runs.
     let (finished_tx, finished_rx) = std::sync::mpsc::channel::<()>();
 
     let merge_profraw_dir = paths.profraw_dir.clone();
@@ -1320,11 +1144,9 @@ fn coverage_run_tests(
         }
     });
 
-    // Merge profraws after each passing test. The callback only fires for passing
-    // tests (not ignored or failed ones) — see render_tests.rs. A passing test that
-    // produces no profraw files is a bug: the instrumented rustc should always write
-    // at least one profraw when it runs. That check still needs the directory read,
-    // so it stays here rather than moving into the batched merge thread.
+    // Only passing tests reach this, see render_tests.rs. One that ran without
+    // writing any coverage means the instrumented compiler never ran, which is
+    // worth saying out loud instead of quietly reporting less coverage.
     let on_test_finished = move |test_name: &str| {
         let has_profraw = fs::read_dir(&paths.profraw_dir)
             .map(|entries| {
@@ -1350,8 +1172,9 @@ fn coverage_run_tests(
         return true;
     };
 
-    let renderer = Renderer::new(streaming_command.stdout.take().unwrap(), builder, record_failed_tests)
-        .with_on_test_finished(Box::new(on_test_finished));
+    let renderer =
+        Renderer::new(streaming_command.stdout.take().unwrap(), builder, record_failed_tests)
+            .with_on_test_finished(Box::new(on_test_finished));
 
     if stream {
         renderer.stream_all();
@@ -2384,14 +2207,11 @@ struct Compiletest {
     suite: &'static str,
     path: &'static str,
     compare_mode: Option<&'static str>,
-    /// Which function actually runs the test binary. `Default` is the normal
-    /// path (`try_run_tests`); `Coverage` is used by `CompilerCoverage` to also
-    /// merge each test's profraw into the running profdata as it finishes.
+    /// How to run the tests. `Coverage` also merges what each test produces.
     ///
-    /// This is a plain enum instead of a stored `fn` pointer so `Compiletest`
-    /// can derive `PartialEq`/`Hash` correctly -- comparing function pointers
-    /// by address doesn't express real identity, and bootstrap uses these
-    /// derives as a cache key to dedupe repeated `Step`s.
+    /// An enum rather than a function pointer, because bootstrap hashes and
+    /// compares steps to avoid repeating them, and function pointers compare
+    /// by address, which says nothing about whether two steps are the same.
     run_tests_fn: TestRunnerKind,
 }
 
@@ -2410,8 +2230,12 @@ impl TestRunnerKind {
         record_failed_tests: RecordFailedTests,
     ) -> bool {
         match self {
-            TestRunnerKind::Default => crate::utils::render_tests::try_run_tests(builder, cmd, stream, record_failed_tests),
-            TestRunnerKind::Coverage => coverage_run_tests(builder, cmd, stream, record_failed_tests),
+            TestRunnerKind::Default => {
+                crate::utils::render_tests::try_run_tests(builder, cmd, stream, record_failed_tests)
+            }
+            TestRunnerKind::Coverage => {
+                coverage_run_tests(builder, cmd, stream, record_failed_tests)
+            }
         }
     }
 }

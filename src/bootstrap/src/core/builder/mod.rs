@@ -1027,7 +1027,7 @@ impl<'a> Builder<'a> {
                 run::CoverageDump,
                 run::Rustfmt,
                 run::GenerateHelp,
-                test::CompilerCoverage,
+                run::CompilerCoverage,
             ),
             Kind::Setup => {
                 describe!(setup::Profile, setup::Hook, setup::Link, setup::Editor)
