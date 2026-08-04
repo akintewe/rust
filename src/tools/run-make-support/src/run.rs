@@ -58,6 +58,11 @@ fn run_common(name: &str, args: Option<&[&str]>) -> Command {
     });
     cmd.env("LC_ALL", "C"); // force english locale
 
+    // Tests that generate their own profile data rely on it landing where
+    // `-Cprofile-generate` put it. An inherited `LLVM_PROFILE_FILE` overrides
+    // that at runtime and sends the files somewhere else, so drop it.
+    cmd.env_remove("LLVM_PROFILE_FILE");
+
     cmd.inspect(|std_cmd| eprintln!("running: {std_cmd:?}"));
     cmd
 }
