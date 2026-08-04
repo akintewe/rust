@@ -1,8 +1,19 @@
+//! Turns raw `llvm-cov export` output into one entry per function.
+//!
+//! LLVM does not count functions the way a person would. A generic function is
+//! reported once for every set of types it was used with, and every closure is
+//! reported as though it were its own function. So a single function in the
+//! source can show up in the raw data many times over.
+//!
+//! This module adds those duplicates back together, so one entry coming out of
+//! here means one function as it is actually written in the source.
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
 use anyhow::{Context, Result};
 use rustc_demangle::demangle;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 // llvm-cov export --format=text JSON structures
 #[derive(Deserialize)]
@@ -23,36 +34,95 @@ struct Function {
     regions: Vec<Vec<serde_json::Value>>,
 }
 
+/// One function's coverage, after merging.
+#[derive(Serialize, Deserialize)]
 pub struct FunctionReport {
+    /// Where this function sits in `CoverageData::functions`.
+    ///
+    /// Source lines are written out into separate JSON files and looked up by
+    /// this number, so it has to stay put once it has been handed out.
+    pub id: usize,
     pub demangled: String,
     pub filename: String,
     pub line_start: usize,
-    pub _line_end: usize,
-    // per-line hit counts for lines line_start..=line_end
-    // None = LLVM doesn't track this line (closing braces etc)
-    // Some(n) = total hits across all merged monomorphizations
+    /// How many times each line ran, counting from `line_start`.
+    ///
+    /// `None` means LLVM does not track that line at all, a blank line or a
+    /// closing brace for example, so it counts as neither covered nor missed.
     pub line_counts: Vec<Option<u64>>,
+    /// Worked out after merging, so it reflects the summed counts rather than
+    /// any single monomorphization.
+    pub category: FunctionCategory,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum FunctionCategory {
     FullyCovered,
     PartiallyCovered,
     FullyUncovered,
 }
 
-/// Parses the llvm-cov export JSON, filters to compiler functions, merges
-/// monomorphizations and closures into their parents, and returns the final
-/// reports plus the source file cache used to build them (the cache is
-/// reused later for the html source view, no need to re-read files).
-pub fn process(json_text: &str, src_root: &Path) -> Result<(Vec<FunctionReport>, HashMap<String, Vec<String>>)> {
-    let export: Export = serde_json::from_str(json_text)
-        .context("failed to parse llvm-cov JSON")?;
+impl FunctionCategory {
+    /// Name used in the HTML class attribute and in the report filenames.
+    pub fn css_class(self) -> &'static str {
+        match self {
+            FunctionCategory::FullyCovered => "fully",
+            FunctionCategory::PartiallyCovered => "partial",
+            FunctionCategory::FullyUncovered => "uncovered",
+        }
+    }
+
+    /// Name shown to whoever is reading the report.
+    pub fn label(self) -> &'static str {
+        match self {
+            FunctionCategory::FullyCovered => "Fully Covered",
+            FunctionCategory::PartiallyCovered => "Partially Covered",
+            FunctionCategory::FullyUncovered => "Fully Uncovered",
+        }
+    }
+}
+
+/// Everything the report needs, so it can be built without going back to the
+/// llvm-cov output.
+#[derive(Serialize, Deserialize)]
+pub struct CoverageData {
+    pub functions: Vec<FunctionReport>,
+    /// The text of every source file these functions came from, keyed by the
+    /// path that appears in the coverage data.
+    ///
+    /// Read once here so that building the report never has to go to disk.
+    pub sources: HashMap<String, Vec<String>>,
+}
+
+/// Decide whether a function is fully covered, partly covered, or not covered.
+///
+/// LLVM does not track every line, so only the lines it does track count here.
+/// If all of them ran the function is fully covered, if none of them ran it is
+/// uncovered, and anything in between is partly covered.
+///
+/// A function with no tracked lines counts as covered, since there is nothing
+/// in it that could have been missed.
+fn categorize(line_counts: &[Option<u64>]) -> FunctionCategory {
+    let tracked: Vec<u64> = line_counts.iter().filter_map(|c| *c).collect();
+    if tracked.is_empty() {
+        FunctionCategory::FullyCovered
+    } else if tracked.iter().all(|&c| c > 0) {
+        FunctionCategory::FullyCovered
+    } else if tracked.iter().all(|&c| c == 0) {
+        FunctionCategory::FullyUncovered
+    } else {
+        FunctionCategory::PartiallyCovered
+    }
+}
+
+/// Read the llvm-cov JSON and merge it down to one entry per function.
+pub fn process(json_text: &str, src_root: &Path) -> Result<CoverageData> {
+    let export: Export =
+        serde_json::from_str(json_text).context("failed to parse llvm-cov JSON")?;
 
     let functions = export.data.into_iter().flat_map(|d| d.functions).collect::<Vec<_>>();
     eprintln!("{} functions loaded", functions.len());
 
-    // source file cache
     let mut source_cache: HashMap<String, Vec<String>> = HashMap::new();
 
     let mut reports: Vec<FunctionReport> = vec![];
@@ -60,7 +130,8 @@ pub fn process(json_text: &str, src_root: &Path) -> Result<(Vec<FunctionReport>,
     for func in &functions {
         let demangled = format!("{:#}", demangle(&func.name));
 
-        // only compiler crates — match `rustc_foo::` at the start or after a leading `<`
+        // Only compiler crates. The name either starts with `rustc_`, or has
+        // it just inside a leading `<` for an impl method.
         if !demangled.starts_with("rustc") && !demangled.contains("<rustc") {
             continue;
         }
@@ -79,34 +150,39 @@ pub fn process(json_text: &str, src_root: &Path) -> Result<(Vec<FunctionReport>,
         let mut line_start = usize::MAX;
         let mut line_end = 0usize;
         for region in &func.regions {
-            if region.len() < 5 { continue; }
+            if region.len() < 5 {
+                continue;
+            }
             let rs = region[0].as_u64().unwrap_or(0) as usize;
             let re = region[2].as_u64().unwrap_or(0) as usize;
-            if rs > 0 && rs < line_start { line_start = rs; }
-            if re > line_end { line_end = re; }
+            if rs > 0 && rs < line_start {
+                line_start = rs;
+            }
+            if re > line_end {
+                line_end = re;
+            }
         }
         if line_start == usize::MAX || line_end == 0 || line_start > line_end {
             continue;
         }
 
-        // build per-line hit count map from regions
-        // region format: [line_start, col_start, line_end, col_end, count, file_id, expanded_file_id, kind]
-        // kind: 0=code, 1=expansion, 2=skipped, 3=gap — only count kind=0 (real code regions)
+        // A region is [line_start, col_start, line_end, col_end, count, file_id,
+        // expanded_file_id, kind], and only kind 0 is real code.
         //
-        // For each line, use the innermost (tightest-enclosing) region's count.
-        // LLVM emits nested regions for branches — outer has the function/block count,
-        // inner has the branch-taken count. The innermost region (latest line_start,
-        // earliest line_end) is the most specific counter for what actually ran on
-        // that line. Taking the minimum instead incorrectly attributes outer counts
-        // to lines only reached by specific branches.
-        //
-        // Tightness = smallest line span; ties broken by latest line_start (higher rs).
-        // key: line → (span_lines, Reverse(rs), count)
-        let mut region_tightness: HashMap<usize, (usize, std::cmp::Reverse<usize>, u64)> = HashMap::new();
+        // Regions nest. An outer one counts a whole block, an inner one counts a
+        // branch inside that block, so the innermost region covering a line is
+        // the one that says whether the line ran. Pick the smallest span, and
+        // the later start when two spans are the same size.
+        let mut region_tightness: HashMap<usize, (usize, std::cmp::Reverse<usize>, u64)> =
+            HashMap::new();
         for region in &func.regions {
-            if region.len() < 8 { continue; }
+            if region.len() < 8 {
+                continue;
+            }
             let kind = region[7].as_u64().unwrap_or(0);
-            if kind != 0 { continue; }
+            if kind != 0 {
+                continue;
+            }
             let rs = region[0].as_u64().unwrap_or(0) as usize;
             let re = region[2].as_u64().unwrap_or(0) as usize;
             let count = region[4].as_u64().unwrap_or(0);
@@ -120,12 +196,9 @@ pub fn process(json_text: &str, src_root: &Path) -> Result<(Vec<FunctionReport>,
                 }
             }
         }
-        let region_counts: HashMap<usize, u64> = region_tightness
-            .into_iter()
-            .map(|(line, (_, _, count))| (line, count))
-            .collect();
+        let region_counts: HashMap<usize, u64> =
+            region_tightness.into_iter().map(|(line, (_, _, count))| (line, count)).collect();
 
-        // load source file
         if !source_cache.contains_key(&filename) {
             let resolved = resolve_source_path(&filename, src_root);
             let lines = match resolved.and_then(|p| std::fs::read_to_string(&p).ok()) {
@@ -135,13 +208,13 @@ pub fn process(json_text: &str, src_root: &Path) -> Result<(Vec<FunctionReport>,
             source_cache.insert(filename.clone(), lines);
         }
 
-        // store raw counts — None means LLVM doesn't track this line
-        // also treat lines containing only bug!/span_bug! as None (ignored) —
-        // these are intentionally unreachable and not real coverage gaps
+        // `bug!` and `span_bug!` lines are meant never to run, so reporting
+        // them as uncovered would only be noise.
         let source_lines = source_cache.get(&filename).cloned().unwrap_or_default();
         let mut line_counts: Vec<Option<u64>> = (line_start..=line_end)
             .map(|lineno| {
-                let src = source_lines.get(lineno.saturating_sub(1)).map(|s| s.trim()).unwrap_or("");
+                let src =
+                    source_lines.get(lineno.saturating_sub(1)).map(|s| s.trim()).unwrap_or("");
                 if src.starts_with("bug!") || src.starts_with("span_bug!") {
                     return None;
                 }
@@ -149,16 +222,19 @@ pub fn process(json_text: &str, src_root: &Path) -> Result<(Vec<FunctionReport>,
             })
             .collect();
 
-        // if a closing brace line shows as uncovered but the preceding covered line
-        // in this function was covered, promote it — LLVM maps branch-not-taken
-        // counters to closing braces, making them red when the body above is green
+        // LLVM hangs branch-not-taken counts off closing braces, so a brace can
+        // show as uncovered while the body above it clearly ran. Give it the
+        // count of the last line that did run instead.
         let mut last_covered_count: Option<u64> = None;
         for i in 0..line_counts.len() {
             let lineno = line_start + i;
             let src = source_lines.get(lineno.saturating_sub(1)).map(|s| s.trim()).unwrap_or("");
-            let is_closing = src == "}" || src == "};" || src == "}," || src == "});" || src == "})";
+            let is_closing =
+                src == "}" || src == "};" || src == "}," || src == "});" || src == "})";
             match line_counts[i] {
-                Some(c) if c > 0 => { last_covered_count = Some(c); }
+                Some(c) if c > 0 => {
+                    last_covered_count = Some(c);
+                }
                 Some(0) if is_closing => {
                     if let Some(c) = last_covered_count {
                         line_counts[i] = Some(c);
@@ -168,58 +244,82 @@ pub fn process(json_text: &str, src_root: &Path) -> Result<(Vec<FunctionReport>,
             }
         }
 
-        // TODO: propagate uncovered status to preceding ignored lines (e.g. match
-        // arm patterns that are grey but whose body is red). Needs a smarter approach
-        // than a simple lookahead — naive propagation marks too many lines as uncovered.
+        // FIXME: a match arm's pattern shows as untracked even when its body
+        // never ran. Marking those uncovered needs more than a lookahead, the
+        // naive version marked far too many lines.
 
         reports.push(FunctionReport {
+            id: 0,
             demangled,
             filename,
             line_start,
-            _line_end: line_end,
+            category: categorize(&line_counts),
             line_counts,
         });
     }
 
     eprintln!("{} compiler functions processed (before merging monomorphizations)", reports.len());
 
-    // group by (filename, line_start) and sum hit counts across monomorphizations
     let reports = merge_monomorphizations(reports);
     eprintln!("{} functions after merging monomorphizations", reports.len());
 
-    let reports = merge_closures(reports);
+    let mut reports = merge_closures(reports);
     eprintln!("{} functions after merging closures into parents", reports.len());
 
-    Ok((reports, source_cache))
+    // Left until now because merging changes the counts, and the ids have to
+    // match the order the source shards get written in.
+    for (id, report) in reports.iter_mut().enumerate() {
+        report.id = id;
+        report.category = categorize(&report.line_counts);
+    }
+
+    Ok(CoverageData { functions: reports, sources: source_cache })
 }
 
+/// Work out where a source file actually lives on this machine.
+///
+/// Paths in the coverage data are full paths from whichever machine built the
+/// compiler, something like `/home/someone/rust/compiler/rustc_abi/src/x.rs`.
+/// Run the report anywhere else and that path does not exist.
+///
+/// Everything from `/compiler/` onwards is the same in any checkout though, so
+/// take that part and join it onto the checkout we were given.
+///
+/// Gives back `None` if the file still cannot be found. The function is then
+/// still listed in the report, just with no source to show.
 pub fn resolve_source_path(filename: &str, src_root: &Path) -> Option<PathBuf> {
-    // filename is an absolute path like /home/gh-akintewe/rust/compiler/rustc_ast/src/...
-    // we want to find /compiler/... and join it with src_root
     if let Some(idx) = filename.find("/compiler/") {
-        let rel = &filename[idx + 1..]; // "compiler/rustc_ast/src/..."
+        let rel = &filename[idx + 1..];
         let candidate = src_root.join(rel);
         if candidate.exists() {
             return Some(candidate);
         }
     }
-    // fallback: try the path as-is
+
     let p = PathBuf::from(filename);
     if p.exists() { Some(p) } else { None }
 }
 
+/// Add up the separate copies LLVM made of each generic function.
+///
+/// A generic function is compiled once for every set of types it is used with,
+/// and LLVM reports each copy on its own. Two copies starting on the same line
+/// of the same file are the same function, so their counts get added together.
+///
+/// This matters because different copies take different branches. A line that
+/// only one copy ever reached still counts as covered.
 fn merge_monomorphizations(reports: Vec<FunctionReport>) -> Vec<FunctionReport> {
-    // key: (filename, line_start) — same source location = same generic function
-    // sum hit counts across all monomorphizations — a branch covered by one mono
-    // contributes its count to the total, so two partials can become fully covered
-    let mut groups: std::collections::BTreeMap<(String, usize), FunctionReport> = std::collections::BTreeMap::new();
+    let mut groups: std::collections::BTreeMap<(String, usize), FunctionReport> =
+        std::collections::BTreeMap::new();
 
     for report in reports {
         let key = (report.filename.clone(), report.line_start);
         match groups.get_mut(&key) {
-            None => { groups.insert(key, report); }
+            None => {
+                groups.insert(key, report);
+            }
             Some(existing) => {
-                // sum counts — None (ignored) stays None, Some values are added
+                // An untracked line stays untracked, anything else adds up.
                 for (i, count) in report.line_counts.iter().enumerate() {
                     if let Some(existing_count) = existing.line_counts.get_mut(i) {
                         *existing_count = match (*existing_count, *count) {
@@ -230,7 +330,7 @@ fn merge_monomorphizations(reports: Vec<FunctionReport>) -> Vec<FunctionReport> 
                         };
                     }
                 }
-                // prefer shorter name — less generic type noise
+                // Keep the shortest name, it carries the least type noise.
                 if report.demangled.len() < existing.demangled.len() {
                     existing.demangled = report.demangled;
                 }
@@ -242,33 +342,44 @@ fn merge_monomorphizations(reports: Vec<FunctionReport>) -> Vec<FunctionReport> 
 }
 
 #[cfg(test)]
-fn make_report(demangled: &str, filename: &str, line_start: usize, line_counts: Vec<Option<u64>>) -> FunctionReport {
-    let line_end = line_start + line_counts.len().saturating_sub(1);
+fn make_report(
+    demangled: &str,
+    filename: &str,
+    line_start: usize,
+    line_counts: Vec<Option<u64>>,
+) -> FunctionReport {
     FunctionReport {
+        id: 0,
         demangled: demangled.to_string(),
         filename: filename.to_string(),
         line_start,
-        _line_end: line_end,
+        category: categorize(&line_counts),
         line_counts,
     }
 }
 
+/// Take one `::{closure#N}` off the end of a name, if there is one.
+///
+/// Closures are named after the function holding them, so `foo::{closure#0}`
+/// gives back `foo`. A closure inside another closure only loses one level per
+/// call, so `foo::{closure#0}::{closure#1}` gives `foo::{closure#0}`. Keep
+/// calling until it returns `None` to get back to the real function.
 fn closure_parent(name: &str) -> Option<&str> {
-    // strip the last "::{closure#N}" (or "::{closure_env#N}") suffix
-    // e.g. "foo::{closure#0}" -> "foo"
-    //      "foo::{closure#0}::{closure#1}" -> "foo::{closure#0}"
     let idx = name.rfind("::{closure")?;
     Some(&name[..idx])
 }
 
+/// Move each closure's coverage into the function it is written inside.
+///
+/// LLVM reports a closure as a function of its own. To anyone reading the
+/// report a closure is just part of the function around it, so leaving them
+/// separate would split one function into several entries.
 fn merge_closures(reports: Vec<FunctionReport>) -> Vec<FunctionReport> {
-    // group by (filename, parent_name) — closures fold into their parent
-    // key: (filename, canonical_name) where canonical_name strips closure suffixes
     let mut groups: std::collections::BTreeMap<(String, String), FunctionReport> =
         std::collections::BTreeMap::new();
 
     for report in reports {
-        // walk up the closure chain to find the root parent name
+        // Closures nest, so keep stripping until there is nothing left to strip.
         let mut root = report.demangled.as_str();
         while let Some(parent) = closure_parent(root) {
             root = parent;
@@ -283,10 +394,9 @@ fn merge_closures(reports: Vec<FunctionReport>) -> Vec<FunctionReport> {
                 groups.insert(key, r);
             }
             Some(existing) => {
-                // `line_counts[i]` means line `line_start + i` for EACH report's own
-                // span -- a closure's span rarely matches its parent's, so merging by
-                // vec index silently summed/appended unrelated lines. Re-key both
-                // sides by actual line number into the union of both spans instead.
+                // Each side counts from its own `line_start`, and a closure
+                // hardly ever starts where its parent does. Line the two up by
+                // real line number, not by position in the vec.
                 let new_line_start = existing.line_start.min(report.line_start);
                 let existing_line_end = existing.line_start + existing.line_counts.len();
                 let report_line_end = report.line_start + report.line_counts.len();
@@ -295,18 +405,19 @@ fn merge_closures(reports: Vec<FunctionReport>) -> Vec<FunctionReport> {
                 let mut merged: Vec<Option<u64>> =
                     vec![None; new_line_end.saturating_sub(new_line_start)];
 
-                let place = |line_start: usize, counts: &[Option<u64>], merged: &mut Vec<Option<u64>>| {
-                    for (i, count) in counts.iter().enumerate() {
-                        let lineno = line_start + i;
-                        let idx = lineno - new_line_start;
-                        merged[idx] = match (merged[idx], *count) {
-                            (Some(a), Some(b)) => Some(a.saturating_add(b)),
-                            (Some(a), None) => Some(a),
-                            (None, Some(b)) => Some(b),
-                            (None, None) => None,
-                        };
-                    }
-                };
+                let place =
+                    |line_start: usize, counts: &[Option<u64>], merged: &mut Vec<Option<u64>>| {
+                        for (i, count) in counts.iter().enumerate() {
+                            let lineno = line_start + i;
+                            let idx = lineno - new_line_start;
+                            merged[idx] = match (merged[idx], *count) {
+                                (Some(a), Some(b)) => Some(a.saturating_add(b)),
+                                (Some(a), None) => Some(a),
+                                (None, Some(b)) => Some(b),
+                                (None, None) => None,
+                            };
+                        }
+                    };
                 place(existing.line_start, &existing.line_counts, &mut merged);
                 place(report.line_start, &report.line_counts, &mut merged);
 
@@ -377,7 +488,8 @@ mod tests {
         // which only happened to work when both spans started at the same line.
         // A closure defined well inside its parent (different line_start, and a
         // much shorter span) must still land on the correct absolute lines.
-        let parent = make_report("outer", "lib.rs", 100, vec![Some(5), Some(5), Some(5), Some(5), Some(5)]);
+        let parent =
+            make_report("outer", "lib.rs", 100, vec![Some(5), Some(5), Some(5), Some(5), Some(5)]);
         let closure = make_report("outer::{closure#0}", "lib.rs", 102, vec![Some(9), Some(9)]);
 
         let merged = merge_closures(vec![parent, closure]);
@@ -390,7 +502,7 @@ mod tests {
         // lines 100, 101, 103 only came from the parent
         assert_eq!(r.line_counts[0], Some(5)); // line 100
         assert_eq!(r.line_counts[1], Some(5)); // line 101
-        // lines 102, 103 got hit by both parent and closure -- summed
+        // lines 102 and 103 were hit by both, so their counts add up
         assert_eq!(r.line_counts[2], Some(5 + 9)); // line 102
         assert_eq!(r.line_counts[3], Some(5 + 9)); // line 103
         assert_eq!(r.line_counts[4], Some(5)); // line 104, parent only
@@ -398,8 +510,8 @@ mod tests {
 
     #[test]
     fn resolve_source_path_falls_back_to_the_raw_filename() {
-        // no /compiler/ segment and the path doesn't exist -- should return None,
-        // not panic or silently resolve to something unrelated
+        // No /compiler/ part and the path is not real, so this should give
+        // None rather than panic or land on some unrelated file.
         let result = resolve_source_path("/nonexistent/path/foo.rs", Path::new("/tmp"));
         assert!(result.is_none());
     }

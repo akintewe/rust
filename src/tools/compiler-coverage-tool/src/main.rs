@@ -1,164 +1,146 @@
-//! Turns an `llvm-cov export` json file into a browsable html coverage
-//! report for the Rust compiler itself. Used by `./x run compiler-coverage`
-//! (see `CompilerCoverage` in bootstrap) after it runs the test suite with
-//! an instrumented rustc and merges the resulting profraws.
+//! Builds a browsable coverage report for the compiler out of `llvm-cov
+//! export` output.
 //!
-//! Three stages, in `processing`, then here in `main`, then in `render`:
-//!   1. `processing::process` parses the json, keeps only rustc's own
-//!      functions, and merges monomorphizations/closures into one entry
-//!      per real function (see that module for why).
-//!   2. `main` sorts the merged functions into fully covered / partially
-//!      covered / fully uncovered, and works out shared state (github
-//!      links, output paths) both stages need.
-//!   3. `render` writes it all out: one json "shard" per function's source
-//!      lines (loaded lazily by the html, not embedded, see
-//!      `render::write_source_shards`), and an index page plus one page per
-//!      category (see `render::render_index` / `render::render_category_page`)
-//!      instead of a single html file with every function in the compiler.
+//! Normally run by `./x run compiler-coverage`. The work comes in two halves:
+//! `transform` merges the llvm-cov output down to one entry per function, and
+//! `generate-html` turns that into the report. `run` does both in one go.
 
 use std::path::{Path, PathBuf};
+
 use anyhow::{Context, Result};
+use clap::Parser;
 
-mod processing;
 mod render;
+mod transform;
 
-use processing::FunctionCategory;
+use transform::{CoverageData, FunctionCategory};
+
+#[derive(Parser)]
+#[command(about = "Build a browsable coverage report for the Rust compiler")]
+struct Args {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Parser)]
+enum Command {
+    /// Transform the coverage data and build the report from it.
+    Run {
+        /// Output of `llvm-cov export`.
+        coverage_json: PathBuf,
+        /// Rust checkout to read source from.
+        src_root: PathBuf,
+        /// Where to write the report. The other pages go beside it.
+        output_html: PathBuf,
+    },
+    /// Transform the coverage data and stop there.
+    Transform {
+        /// Output of `llvm-cov export`.
+        coverage_json: PathBuf,
+        /// Rust checkout to read source from.
+        src_root: PathBuf,
+        /// Where to write the transformed data.
+        output_json: PathBuf,
+    },
+    /// Build the report from data `transform` wrote earlier.
+    GenerateHtml {
+        /// Output of the `transform` subcommand.
+        coverage_data: PathBuf,
+        /// Where to write the report. The other pages go beside it.
+        output_html: PathBuf,
+    },
+}
 
 fn main() -> Result<()> {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() != 4 {
-        eprintln!(
-            "usage: {} <compiler-coverage.json> <rust-src-root> <output.html>",
-            args[0]
-        );
-        eprintln!("  compiler-coverage.json  — filtered llvm-cov export output");
-        eprintln!("  rust-src-root           — path to rust repo root (to read source files)");
-        eprintln!("  output.html             — output HTML file");
-        std::process::exit(1);
+    match Args::parse().command {
+        Command::Run { coverage_json, src_root, output_html } => {
+            let data = read_and_transform(&coverage_json, &src_root)?;
+            generate_html(&data, &output_html)?;
+        }
+        Command::Transform { coverage_json, src_root, output_json } => {
+            let data = read_and_transform(&coverage_json, &src_root)?;
+            let json = serde_json::to_string(&data).context("failed to serialize coverage data")?;
+            write_atomically(&output_json, &json)?;
+            println!("written to {}", output_json.display());
+        }
+        Command::GenerateHtml { coverage_data, output_html } => {
+            let text = std::fs::read_to_string(&coverage_data)
+                .with_context(|| format!("failed to read {}", coverage_data.display()))?;
+            let data: CoverageData =
+                serde_json::from_str(&text).context("failed to parse coverage data")?;
+            generate_html(&data, &output_html)?;
+        }
     }
 
-    let json_path = PathBuf::from(&args[1]);
-    let src_root = PathBuf::from(&args[2]);
-    let output_path = PathBuf::from(&args[3]);
+    Ok(())
+}
 
-    let github_base = render::github_base_url(&src_root);
-    match &github_base {
-        Some(url) => eprintln!("linking functions to {url}/..."),
-        None => eprintln!("no github origin remote found, report will not link to source"),
-    }
-
-    eprintln!("reading {}...", json_path.display());
-    let json_text = std::fs::read_to_string(&json_path)
-        .with_context(|| format!("failed to read {}", json_path.display()))?;
+/// Read the llvm-cov output and merge it down to one entry per function.
+fn read_and_transform(coverage_json: &Path, src_root: &Path) -> Result<CoverageData> {
+    eprintln!("reading {}...", coverage_json.display());
+    let json_text = std::fs::read_to_string(coverage_json)
+        .with_context(|| format!("failed to read {}", coverage_json.display()))?;
 
     eprintln!("parsing JSON...");
-    let (reports, source_cache) = processing::process(&json_text, &src_root)?;
+    transform::process(&json_text, src_root)
+}
 
-    // categorise based on summed counts. index in `reports` doubles as a stable
-    // id used to look up this function's source lines in the JSON shards.
-    let categorised: Vec<(usize, &processing::FunctionReport, FunctionCategory)> = reports.iter().enumerate().map(|(id, r)| {
-        let tracked: Vec<u64> = r.line_counts.iter().filter_map(|c| *c).collect();
-        let cat = if tracked.is_empty() {
-            FunctionCategory::FullyCovered
-        } else if tracked.iter().all(|&c| c > 0) {
-            FunctionCategory::FullyCovered
-        } else if tracked.iter().all(|&c| c == 0) {
-            FunctionCategory::FullyUncovered
-        } else {
-            FunctionCategory::PartiallyCovered
-        };
-        (id, r, cat)
-    }).collect();
-
-    let fully_count = categorised.iter().filter(|(_, _, c)| *c == FunctionCategory::FullyCovered).count();
-    let partial_count = categorised.iter().filter(|(_, _, c)| *c == FunctionCategory::PartiallyCovered).count();
-    let uncovered_count = categorised.iter().filter(|(_, _, c)| *c == FunctionCategory::FullyUncovered).count();
-    let total = fully_count + partial_count + uncovered_count;
+/// Write the report pages, the source shards, and the stylesheet and scripts.
+fn generate_html(data: &CoverageData, output_html: &Path) -> Result<()> {
+    let fully_count = count_in(data, FunctionCategory::FullyCovered);
+    let partial_count = count_in(data, FunctionCategory::PartiallyCovered);
+    let uncovered_count = count_in(data, FunctionCategory::FullyUncovered);
+    let total = data.functions.len();
 
     eprintln!("fully: {fully_count}, partial: {partial_count}, uncovered: {uncovered_count}");
 
-    let base_name = output_path.file_stem().and_then(|s| s.to_str()).unwrap_or("report").to_string();
-    let out_dir = output_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let base_name =
+        output_html.file_stem().and_then(|s| s.to_str()).unwrap_or("report").to_string();
+    let out_dir = output_html.parent().unwrap_or(Path::new(".")).to_path_buf();
 
     let shard_dir_name = format!("{base_name}_sources");
     let shard_dir = out_dir.join(&shard_dir_name);
     eprintln!("writing source shards to {}...", shard_dir.display());
-    render::write_source_shards(&categorised, &source_cache, &shard_dir)?;
+    render::write_source_shards(&data.functions, &data.sources, &shard_dir)?;
 
-    // The report is split into an index page plus one page per coverage
-    // category instead of one file with every function in the compiler --
-    // a single-page report of the whole compiler is tens of megabytes of
-    // html even with source lines shard'd out separately, since the
-    // crate/file/function tree itself is still huge.
+    render::write_static_assets(&out_dir)?;
+
     let paths = render::report_paths(&base_name);
 
-    let covered_lines_total: usize = categorised.iter().map(|(_, r, _)| {
-        r.line_counts.iter().filter(|c| c.map_or(false, |n| n > 0)).count()
-    }).sum();
-    let tracked_lines_total: usize = categorised.iter().map(|(_, r, _)| {
-        r.line_counts.iter().filter(|c| c.is_some()).count()
-    }).sum();
+    let covered_lines_total: usize = data
+        .functions
+        .iter()
+        .map(|r| r.line_counts.iter().filter(|c| c.map_or(false, |n| n > 0)).count())
+        .sum();
+    let tracked_lines_total: usize =
+        data.functions.iter().map(|r| r.line_counts.iter().filter(|c| c.is_some()).count()).sum();
 
-    let pages = [
-        (
-            &paths.index,
-            render::render_index(
-                fully_count,
-                partial_count,
-                uncovered_count,
-                total,
-                covered_lines_total,
-                tracked_lines_total,
-                &paths,
-            )?,
-        ),
-        (
-            &paths.uncovered,
-            render::render_category_page(
-                &categorised,
-                FunctionCategory::FullyUncovered,
-                "uncovered",
-                "Fully Uncovered",
-                &shard_dir_name,
-                &github_base,
-                &paths,
-            )?,
-        ),
-        (
-            &paths.partially_covered,
-            render::render_category_page(
-                &categorised,
-                FunctionCategory::PartiallyCovered,
-                "partial",
-                "Partially Covered",
-                &shard_dir_name,
-                &github_base,
-                &paths,
-            )?,
-        ),
-        (
-            &paths.fully_covered,
-            render::render_category_page(
-                &categorised,
-                FunctionCategory::FullyCovered,
-                "fully",
-                "Fully Covered",
-                &shard_dir_name,
-                &github_base,
-                &paths,
-            )?,
-        ),
-    ];
+    let mut pages = vec![(
+        paths.index.clone(),
+        render::render_index(
+            fully_count,
+            partial_count,
+            uncovered_count,
+            covered_lines_total,
+            tracked_lines_total,
+            &paths,
+        )?,
+    )];
 
-    // Write each page to a temp file first, then rename atomically -- so a
-    // crash mid-run never leaves a partial or stale output file behind.
+    for category in [
+        FunctionCategory::FullyUncovered,
+        FunctionCategory::PartiallyCovered,
+        FunctionCategory::FullyCovered,
+    ] {
+        let functions: Vec<_> = data.functions.iter().filter(|r| r.category == category).collect();
+        pages.push((
+            paths.for_category(category).to_string(),
+            render::render_category_page(&functions, category, &shard_dir_name, &paths)?,
+        ));
+    }
+
     for (filename, html) in &pages {
-        let final_path = out_dir.join(filename);
-        let tmp_path = final_path.with_extension("html.tmp");
-        std::fs::write(&tmp_path, html)
-            .with_context(|| format!("failed to write {}", tmp_path.display()))?;
-        std::fs::rename(&tmp_path, &final_path)
-            .with_context(|| format!("failed to rename {} to {}", tmp_path.display(), final_path.display()))?;
+        write_atomically(&out_dir.join(filename), html)?;
     }
 
     let index_path = out_dir.join(&paths.index);
@@ -171,6 +153,24 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn pct(n: usize, total: usize) -> f64 {
+fn count_in(data: &CoverageData, category: FunctionCategory) -> usize {
+    data.functions.iter().filter(|r| r.category == category).count()
+}
+
+/// Write to a temp file and rename it over the target.
+///
+/// Crashing halfway through then leaves the previous report in place rather
+/// than a half written page.
+fn write_atomically(path: &Path, contents: &str) -> Result<()> {
+    let tmp_path = path.with_extension("tmp");
+    std::fs::write(&tmp_path, contents)
+        .with_context(|| format!("failed to write {}", tmp_path.display()))?;
+    std::fs::rename(&tmp_path, path).with_context(|| {
+        format!("failed to rename {} to {}", tmp_path.display(), path.display())
+    })?;
+    Ok(())
+}
+
+pub(crate) fn pct(n: usize, total: usize) -> f64 {
     if total == 0 { 0.0 } else { n as f64 / total as f64 * 100.0 }
 }
