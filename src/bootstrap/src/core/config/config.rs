@@ -399,7 +399,6 @@ impl Config {
             bypass_bootstrap_lock: flags_bypass_bootstrap_lock,
             rust_profile_generate: flags_rust_profile_generate,
             rust_profile_use: flags_rust_profile_use,
-            rust_coverage: flags_rust_coverage,
             llvm_profile_use: flags_llvm_profile_use,
             llvm_profile_generate: flags_llvm_profile_generate,
             enable_bolt_settings: flags_enable_bolt_settings,
@@ -1223,23 +1222,19 @@ impl Config {
             }
         }
 
-        // Coverage instrumentation needs at least limited debuginfo (for source-level
-        // line tables) to produce a meaningful report, so `rust.coverage` implies a
-        // debuginfo level the same way `rust.debug` does, instead of requiring every
-        // debuginfo-stripping call site to separately check `rust_coverage`.
-        //
-        // This is only a default: an explicit `rust.debuginfo-level-rustc = "none"`
-        // (or similar) still wins over the coverage-implied level below, since it
-        // goes through `.or(rust_debuginfo_level)` first. That combination silently
-        // produces a coverage build with no usable line tables -- there's no warning
-        // for it today, so double check your debuginfo level if `rust.coverage` isn't
-        // reporting what you expect.
-        let rust_coverage =
-            flags_rust_coverage || flags_paths.iter().any(|p| p.ends_with("compiler-coverage"));
+        // `flags_paths` is what the user typed after the subcommand, so this is
+        // checking whether they asked for the coverage step. Asking for it is
+        // enough to turn coverage on, there is no separate flag to remember.
+        let rust_coverage = flags_paths.iter().any(|p| p.ends_with("compiler-coverage"));
 
         let with_defaults = |debuginfo_level_specific: Option<_>| {
+            // Coverage needs line tables to map counts back to source, so it
+            // overrides whatever level was asked for.
+            if rust_coverage {
+                return DebuginfoLevel::Limited;
+            }
             debuginfo_level_specific.or(rust_debuginfo_level).unwrap_or(
-                if rust_debug == Some(true) || rust_coverage {
+                if rust_debug == Some(true) {
                     DebuginfoLevel::Limited
                 } else {
                     DebuginfoLevel::None

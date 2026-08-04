@@ -1196,22 +1196,14 @@ impl Step for Rustc {
         // our LLVM wrapper. Unless we're explicitly requesting `librustc_driver` to be built with
         // debuginfo (via the debuginfo level of the executables using it): strip this debuginfo
         // away after the fact.
-        // `rust.coverage` implies at least `DebuginfoLevel::Limited` for rustc and tools
-        // (see `with_defaults` in `core::config::config`), so these checks against
-        // `DebuginfoLevel::None` already skip stripping when coverage is enabled via its
-        // default. An explicit `rust.debuginfo-level-rustc = "none"` still strips even
-        // with coverage on, which is the user's explicit choice to respect.
         if builder.config.rust_debuginfo_level_rustc == DebuginfoLevel::None
             && builder.config.rust_debuginfo_level_tools == DebuginfoLevel::None
-            && !builder.config.rust_coverage
         {
             let rustc_driver = target_root_dir.join("librustc_driver.so");
             strip_debug(builder, target, &rustc_driver);
         }
 
-        if builder.config.rust_debuginfo_level_rustc == DebuginfoLevel::None
-            && !builder.config.rust_coverage
-        {
+        if builder.config.rust_debuginfo_level_rustc == DebuginfoLevel::None {
             // Due to LTO a lot of debug info from C++ dependencies such as jemalloc can make it into
             // our final binaries
             strip_debug(builder, target, &target_root_dir.join("rustc-main"));
@@ -1335,19 +1327,15 @@ pub fn rustc_cargo(
         ));
     }
 
-    // Instrument every stage of rustc being built, not just stage0 -> stage1: a
-    // `build_compiler.stage == 0` (or `== 1`) restriction here silently produces an
-    // uninstrumented rustc whenever the user requests a different `--stage`.
+    // Every stage gets instrumented. Tying this to one stage means `--stage 2`
+    // quietly hands back a compiler with no coverage in it.
     if builder.config.rust_coverage {
         cargo.rustflag("-Cinstrument-coverage");
         cargo.rustflag("-Zcoverage-options=branch");
-        // `-Ccodegen-units=1` was tested and dropped: A/B coverage runs on
-        // log, itertools, and statig showed no meaningful difference in
-        // covered functions with or without it, and two runs WITH the flag
-        // on the SAME compiler binary already differed by hundreds of
-        // functions on their own. Run-to-run coverage variance in compiler
-        // internals exists independent of codegen-unit count, so the flag
-        // wasn't buying the determinism it looked like it should.
+        // Deliberately not setting `-Ccodegen-units=1` here. It looked like it
+        // made coverage repeatable, but two runs with it set against the same
+        // binary still differed by hundreds of functions, so it was only
+        // covering up the fact that some variance is there either way.
     }
 
     // The stage0 compiler changes infrequently and does not directly depend on code

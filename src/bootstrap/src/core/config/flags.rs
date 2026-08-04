@@ -151,9 +151,6 @@ pub struct Flags {
     /// Unless you know exactly what you are doing, you probably don't need this.
     pub bypass_bootstrap_lock: bool,
 
-    /// instrument stage1 rustc with -Cinstrument-coverage for compiler coverage collection
-    #[arg(global = true, long)]
-    pub rust_coverage: bool,
     /// generate PGO profile with rustc build
     #[arg(global = true, value_hint = clap::ValueHint::FilePath, long, value_name = "PROFILE")]
     pub rust_profile_generate: Option<String>,
@@ -506,6 +503,9 @@ pub enum Subcommand {
         /// arguments for the tool
         #[arg(long, allow_hyphen_values(true))]
         args: Vec<String>,
+        /// skip generating the HTML report when collecting compiler coverage
+        #[arg(long)]
+        no_html_gen: bool,
     },
     /// Set up the environment for development
     #[command(long_about = format!(
@@ -575,6 +575,15 @@ impl Subcommand {
                 compiletest_rustc_args.iter().flat_map(|s| s.split_whitespace()).collect()
             }
             _ => vec![],
+        }
+    }
+
+    /// Whether `./x run compiler-coverage` should stop once the coverage JSON
+    /// is written, rather than going on to build the report.
+    pub fn no_html_gen(&self) -> bool {
+        match *self {
+            Subcommand::Run { no_html_gen, .. } => no_html_gen,
+            _ => false,
         }
     }
 
