@@ -27,12 +27,15 @@ function loadSource(details) {
     for (var i = 0; i < lines.length; i++) {
       var ln = lines[i];
       var cls = classMap[ln.c] || 'line-ignored';
-      html += '<tr class="' + cls + '"><td class="lineno">' + ln.n + '</td><td class="code">' + escapeHtml(ln.t) + '</td></tr>';
+      html += '<tr class="' + cls + '">'
+        + '<td class="lineno">' + ln.n + '</td>'
+        + '<td class="code">' + escapeHtml(ln.t) + '</td></tr>';
     }
     body.innerHTML = html;
     details.setAttribute('data-loaded', '1');
   }).catch(err => {
-    body.innerHTML = '<tr><td class="code">(failed to load source: ' + escapeHtml(String(err)) + ')</td></tr>';
+    body.innerHTML = '<tr><td class="code">(failed to load source: '
+      + escapeHtml(String(err)) + ')</td></tr>';
   });
 }
 

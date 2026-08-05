@@ -655,7 +655,7 @@ impl Step for CompilerCoverage {
         }
 
         builder.info("Building HTML coverage report");
-        let tool_path = builder.tool_exe(Tool::CompilerCoverageTool);
+        let tool_path = builder.tool_exe(Tool::CompilerCoverage);
         let report = std::process::Command::new(&tool_path)
             .arg("run")
             .arg(&paths.coverage_json_path)

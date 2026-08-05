@@ -60,12 +60,16 @@ fn run_tests(
     run_tests_with_callback(builder, cmd, stream, record_failed_tests, None)
 }
 
+/// Called with the name of each test that passes, so coverage runs can pick up
+/// what that test produced.
+pub(crate) type OnTestFinished = Box<dyn Fn(&str)>;
+
 pub(crate) fn run_tests_with_callback(
     builder: &Builder<'_>,
     cmd: &mut BootstrapCommand,
     stream: bool,
     record_failed_tests: RecordFailedTests,
-    on_test_finished: Option<Box<dyn Fn(&str)>>,
+    on_test_finished: Option<OnTestFinished>,
 ) -> bool {
     builder.do_if_verbose(|| println!("running: {cmd:?}"));
 
@@ -112,7 +116,7 @@ pub(crate) struct Renderer<'a> {
     ci_latest_logged_percentage: f64,
 
     failed_tests: Option<File>,
-    on_test_finished: Option<Box<dyn Fn(&str)>>,
+    on_test_finished: Option<OnTestFinished>,
 }
 
 impl<'a> Renderer<'a> {
@@ -151,7 +155,7 @@ impl<'a> Renderer<'a> {
         }
     }
 
-    pub(crate) fn with_on_test_finished(mut self, cb: Box<dyn Fn(&str)>) -> Self {
+    pub(crate) fn with_on_test_finished(mut self, cb: OnTestFinished) -> Self {
         self.on_test_finished = Some(cb);
         self
     }

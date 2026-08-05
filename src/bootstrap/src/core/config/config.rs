@@ -1483,6 +1483,7 @@ impl Config {
                 .unwrap_or(vec![CodegenBackendKind::Llvm]),
             rust_codegen_units: rust_codegen_units.map(threads_from_config),
             rust_codegen_units_std: rust_codegen_units_std.map(threads_from_config),
+            rust_coverage,
             rust_debug_logging: rust_debug_logging
                 .or(rust_rustc_debug_assertions)
                 .unwrap_or(rust_debug == Some(true)),
@@ -1507,7 +1508,6 @@ impl Config {
             rust_parallel_frontend_threads: rust_parallel_frontend_threads.map(threads_from_config),
             rust_profile_generate: flags_rust_profile_generate.or(rust_profile_generate),
             rust_profile_use: flags_rust_profile_use.or(rust_profile_use),
-            rust_coverage,
             rust_randomize_layout: rust_randomize_layout.unwrap_or(false),
             rust_remap_debuginfo: rust_remap_debuginfo.unwrap_or(false),
             rust_rpath: rust_rpath.unwrap_or(true),
