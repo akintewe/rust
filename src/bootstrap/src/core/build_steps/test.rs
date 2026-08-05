@@ -2890,7 +2890,12 @@ Please disable assertions with `rust.debug-assertions = false`.
             cmd.env("RUSTC_SANITIZER_SUPPORT", "1");
         }
 
-        if builder.config.profiler_enabled(target) {
+        // Tests marked `needs-profiler-runtime` generate their own `.profraw`
+        // files and then read them back. A coverage run points every `.profraw`
+        // on the machine at the coverage directory, so those tests never find
+        // theirs. Leaving this argument off makes compiletest ignore them.
+        if builder.config.profiler_enabled(target) && self.run_tests_fn != TestRunnerKind::Coverage
+        {
             cmd.arg("--profiler-runtime");
         }
 
