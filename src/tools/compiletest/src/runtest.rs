@@ -1934,9 +1934,7 @@ impl<'test> TestCx<'test> {
             compiler.arg("-Cforce-unwind-tables=yes");
         }
 
-        for flag in &self.props.compile_flags {
-            compiler.arg(flag);
-        }
+        compiler.args(&self.props.compile_flags);
 
         compiler
     }
