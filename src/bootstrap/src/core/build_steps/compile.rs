@@ -1332,10 +1332,6 @@ pub fn rustc_cargo(
     if builder.config.rust_coverage && build_compiler.stage + 1 == builder.top_stage {
         cargo.rustflag("-Cinstrument-coverage");
         cargo.rustflag("-Zcoverage-options=branch");
-        // Deliberately not setting `-Ccodegen-units=1` here. It looked like it
-        // made coverage repeatable, but two runs with it set against the same
-        // binary still differed by hundreds of functions, so it was only
-        // covering up the fact that some variance is there either way.
     }
 
     // The stage0 compiler changes infrequently and does not directly depend on code

@@ -60,8 +60,7 @@ fn run_tests(
     run_tests_with_callback(builder, cmd, stream, record_failed_tests, None)
 }
 
-/// Called with the name of each test that passes, so coverage runs can pick up
-/// what that test produced.
+// WRITE-DOC
 pub(crate) type OnTestFinished = Box<dyn Fn(&str)>;
 
 pub(crate) fn run_tests_with_callback(

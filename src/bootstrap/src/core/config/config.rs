@@ -1113,9 +1113,6 @@ impl Config {
 
         let download_rustc = download_rustc_commit.is_some();
 
-        // `flags_paths` is what the user typed after the subcommand, so this is
-        // checking whether they asked for the coverage step. Asking for it is
-        // enough to turn coverage on, there is no separate flag to remember.
         let rust_coverage = flags_paths.iter().any(|p| p.ends_with("compiler-coverage"));
 
         let stage = match flags_cmd {
