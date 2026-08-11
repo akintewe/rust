@@ -614,6 +614,18 @@ impl Step for CompilerCoverage {
 
         test::collect_coverage_suites(builder, compiler, target);
 
+        // Individual suites can legitimately merge nothing (e.g. `crashes`,
+        // where every test is expected to fail, so none of them ever reach
+        // the point of writing coverage). Only the whole run producing
+        // nothing at all means instrumentation itself never worked.
+        if !paths.profdata_path.exists() {
+            eprintln!(
+                "coverage: no profraw files were produced across the whole run; \
+                 the instrumented rustc likely never ran"
+            );
+            crate::exit!(1);
+        }
+
         builder.info(&format!("Coverage profdata written to {}", paths.profdata_path.display()));
 
         // Turn the merged profile into JSON that the report tool can read.

@@ -1168,11 +1168,11 @@ fn coverage_run_tests(
 
     let total_merged = merge_thread.join().unwrap();
     if total_merged == 0 {
-        eprintln!(
-            "coverage: no profraw files were produced across the whole run; \
-             the instrumented rustc likely never ran"
-        );
-        crate::exit!(1);
+        // Not fatal here: this only covers the one suite that just ran, and
+        // a suite with no passing tests -- `crashes` is expected to fail its
+        // tests -- legitimately merges nothing. `CompilerCoverage::run`
+        // checks across the whole run once every suite has finished.
+        eprintln!("coverage: no profraw files were produced for `{cmd:?}`");
     }
 
     let status = streaming_command.wait(&builder.config.exec_ctx).unwrap();
