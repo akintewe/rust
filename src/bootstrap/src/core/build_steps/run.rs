@@ -555,6 +555,26 @@ impl Step for GenerateHelp {
     }
 }
 
+// WRITE-DOC
+pub(crate) struct CoveragePaths {
+    pub(crate) profraw_dir: PathBuf,
+    pub(crate) profdata_path: PathBuf,
+    pub(crate) coverage_json_path: PathBuf,
+    pub(crate) html_dir: PathBuf,
+}
+
+impl CoveragePaths {
+    pub(crate) fn new(builder: &Builder<'_>) -> Self {
+        let dir = builder.out.join("coverage");
+        CoveragePaths {
+            profraw_dir: dir.join("profraws"),
+            profdata_path: dir.join("combined.profdata"),
+            coverage_json_path: dir.join("coverage.json"),
+            html_dir: dir,
+        }
+    }
+}
+
 /// Collect coverage of the compiler itself by running the test suites against
 /// an instrumented rustc (`./x run compiler-coverage`).
 ///
@@ -586,7 +606,7 @@ impl Step for CompilerCoverage {
 
         // Left over .profraw files would otherwise be merged in as though this
         // run had produced them.
-        let paths = test::CoveragePaths::new(builder);
+        let paths = CoveragePaths::new(builder);
         if paths.profraw_dir.exists() {
             t!(std::fs::remove_dir_all(&paths.profraw_dir));
         }
@@ -650,7 +670,7 @@ impl Step for CompilerCoverage {
             }
         }
 
-        if builder.config.cmd.no_html_gen() {
+        if builder.config.args().iter().any(|a| *a == "--no-html-gen") {
             return;
         }
 
@@ -660,11 +680,14 @@ impl Step for CompilerCoverage {
             .arg("run")
             .arg(&paths.coverage_json_path)
             .arg(&builder.src)
-            .arg(&paths.html_path)
+            .arg(&paths.html_dir)
             .output();
         match report {
             Ok(out) if out.status.success() => {
-                builder.info(&format!("Coverage report written to {}", paths.html_path.display()));
+                builder.info(&format!(
+                    "Coverage report written to {}",
+                    paths.html_dir.join("report.html").display()
+                ));
             }
             Ok(out) => {
                 builder.info(&format!(

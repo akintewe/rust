@@ -992,27 +992,6 @@ impl Step for StdarchVerify {
     }
 }
 
-/// Files that `./x run compiler-coverage` reads and writes, all under
-/// `build/coverage/`. Kept together so the names are only spelled out once.
-pub(crate) struct CoveragePaths {
-    pub(crate) profraw_dir: PathBuf,
-    pub(crate) profdata_path: PathBuf,
-    pub(crate) coverage_json_path: PathBuf,
-    pub(crate) html_path: PathBuf,
-}
-
-impl CoveragePaths {
-    pub(crate) fn new(builder: &Builder<'_>) -> Self {
-        let dir = builder.out.join("coverage");
-        CoveragePaths {
-            profraw_dir: dir.join("profraws"),
-            profdata_path: dir.join("combined.profdata"),
-            coverage_json_path: dir.join("coverage.json"),
-            html_path: dir.join("report.html"),
-        }
-    }
-}
-
 /// Run the test suites that compiler coverage is collected from.
 pub(crate) fn collect_coverage_suites(
     builder: &Builder<'_>,
@@ -1058,38 +1037,34 @@ fn coverage_run_tests(
     stream: bool,
     record_failed_tests: RecordFailedTests,
 ) -> bool {
-    let paths = CoveragePaths::new(builder);
+    let paths = crate::core::build_steps::run::CoveragePaths::new(builder);
     let llvm_profdata =
         builder.llvm_out(builder.config.host_target).join("bin").join("llvm-profdata");
 
     cmd.env("LLVM_PROFILE_FILE", paths.profraw_dir.join("rustc_%m_%p.profraw").as_os_str());
 
-    // A test compiletest skips as up to date writes no coverage, which then
-    // reads as the compiler never running that code at all.
-    //
-    // FIXME: this re-runs everything every time. Coverage ought to be part of
-    // compiletest's own cache key instead, so untouched tests can stay cached.
+    // WRITE-DOC
     cmd.arg("--force-rerun");
 
-    // Merging after every test means one llvm-profdata process per test, each
-    // one rewriting the whole profile. Over 20k tests that is a lot of waste.
+    // WRITE-DOC
     const MERGE_BATCH_SIZE: usize = 100;
 
-    // Results all arrive on one thread, so this is not about races. The
-    // channel is here to keep merging off that thread, since otherwise test
-    // output stops scrolling every time a merge runs.
-    let (finished_tx, finished_rx) = std::sync::mpsc::channel::<()>();
+    let (finished_tx, finished_rx) = std::sync::mpsc::channel::<usize>();
 
     let merge_profraw_dir = paths.profraw_dir.clone();
     let merge_profdata_path = paths.profdata_path.clone();
     let merge_llvm_profdata = llvm_profdata.clone();
     let merge_thread = std::thread::spawn(move || {
-        let do_merge = || {
-            let profraws: Vec<_> = match fs::read_dir(&merge_profraw_dir) {
+        // WRITE-DOC
+        let mut merged: HashSet<PathBuf> = HashSet::new();
+
+        let mut do_merge = || {
+            let new_profraws: Vec<PathBuf> = match fs::read_dir(&merge_profraw_dir) {
                 Ok(entries) => entries
                     .filter_map(|e| e.ok())
                     .map(|e| e.path())
                     .filter(|p| p.extension().map(|x| x == "profraw").unwrap_or(false))
+                    .filter(|p| !merged.contains(p))
                     .collect(),
                 Err(e) => {
                     eprintln!("coverage: failed to read profraw dir: {e}");
@@ -1097,24 +1072,26 @@ fn coverage_run_tests(
                 }
             };
 
-            if profraws.is_empty() {
+            if new_profraws.is_empty() {
                 return;
             }
 
+            // WRITE-DOC
             let mut merge = std::process::Command::new(&merge_llvm_profdata);
             merge.arg("merge").arg("--sparse").arg("-o").arg(&merge_profdata_path);
             if merge_profdata_path.exists() {
                 merge.arg(&merge_profdata_path);
             }
-            for p in &profraws {
+            for p in &new_profraws {
                 merge.arg(p);
             }
             match merge.output() {
                 Ok(out) if out.status.success() => {
-                    for p in &profraws {
+                    for p in &new_profraws {
                         if let Err(e) = fs::remove_file(p) {
                             eprintln!("coverage: failed to remove {}: {e}", p.display());
                         }
+                        merged.insert(p.clone());
                     }
                 }
                 Ok(out) => {
@@ -1132,8 +1109,8 @@ fn coverage_run_tests(
         let mut pending = 0usize;
         // recv() returns Err once every sender is dropped, i.e. once the test
         // run is done and the last batch needs flushing.
-        while finished_rx.recv().is_ok() {
-            pending += 1;
+        while let Ok(new_count) = finished_rx.recv() {
+            pending += new_count;
             if pending >= MERGE_BATCH_SIZE {
                 do_merge();
                 pending = 0;
@@ -1142,20 +1119,27 @@ fn coverage_run_tests(
         if pending > 0 {
             do_merge();
         }
+
+        merged.len()
     });
 
-    // Only passing tests reach this, see render_tests.rs. One that ran without
-    // writing any coverage means the instrumented compiler never ran, which is
-    // worth saying out loud instead of quietly reporting less coverage.
+    // WRITE-DOC
+    let seen_by_callback: std::cell::RefCell<HashSet<PathBuf>> =
+        std::cell::RefCell::new(HashSet::new());
     let on_test_finished = move |test_name: &str| {
-        let has_profraw = fs::read_dir(&paths.profraw_dir)
-            .map(|entries| {
+        let new_count = match fs::read_dir(&paths.profraw_dir) {
+            Ok(entries) => {
+                let mut seen = seen_by_callback.borrow_mut();
                 entries
                     .filter_map(|e| e.ok())
-                    .any(|e| e.path().extension().map(|x| x == "profraw").unwrap_or(false))
-            })
-            .unwrap_or(false);
-        if !has_profraw {
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().map(|x| x == "profraw").unwrap_or(false))
+                    .filter(|p| seen.insert(p.clone()))
+                    .count()
+            }
+            Err(_) => 0,
+        };
+        if new_count == 0 {
             eprintln!(
                 "coverage: test `{test_name}` passed but wrote no profraw files; \
                  the instrumented rustc may not have run"
@@ -1163,7 +1147,7 @@ fn coverage_run_tests(
         }
         // ignore send errors -- if the merge thread already exited there's
         // nothing left to signal
-        let _ = finished_tx.send(());
+        let _ = finished_tx.send(new_count);
     };
 
     builder.do_if_verbose(|| println!("running: {cmd:?}"));
@@ -1182,7 +1166,14 @@ fn coverage_run_tests(
         renderer.render_all();
     }
 
-    merge_thread.join().unwrap();
+    let total_merged = merge_thread.join().unwrap();
+    if total_merged == 0 {
+        eprintln!(
+            "coverage: no profraw files were produced across the whole run; \
+             the instrumented rustc likely never ran"
+        );
+        crate::exit!(1);
+    }
 
     let status = streaming_command.wait(&builder.config.exec_ctx).unwrap();
     if !status.success() && builder.is_verbose() {
@@ -2208,13 +2199,10 @@ struct Compiletest {
     path: &'static str,
     compare_mode: Option<&'static str>,
     /// How to run the tests. `Coverage` also merges what each test produces.
-    ///
-    /// An enum rather than a function pointer, because bootstrap hashes and
-    /// compares steps to avoid repeating them, and function pointers compare
-    /// by address, which says nothing about whether two steps are the same.
     run_tests_fn: TestRunnerKind,
 }
 
+// WRITE-DOC
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum TestRunnerKind {
     Default,
