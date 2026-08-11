@@ -313,6 +313,7 @@ fn merge_monomorphizations(reports: Vec<FunctionReport>) -> Vec<FunctionReport> 
         std::collections::BTreeMap::new();
 
     for report in reports {
+        // WRITE-DOC
         let key = (report.filename.clone(), report.line_start);
         match groups.get_mut(&key) {
             None => {
@@ -384,6 +385,7 @@ fn merge_closures(reports: Vec<FunctionReport>) -> Vec<FunctionReport> {
         while let Some(parent) = closure_parent(root) {
             root = parent;
         }
+        // WRITE-DOC
         let key = (report.filename.clone(), root.to_string());
 
         let root_owned = root.to_string();

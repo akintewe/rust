@@ -30,8 +30,8 @@ enum Command {
         coverage_json: PathBuf,
         /// Rust checkout to read source from.
         src_root: PathBuf,
-        /// Where to write the report. The other pages go beside it.
-        output_html: PathBuf,
+        /// Directory to write the report and its supporting files into.
+        output_dir: PathBuf,
     },
     /// Transform the coverage data and stop there.
     Transform {
@@ -39,36 +39,39 @@ enum Command {
         coverage_json: PathBuf,
         /// Rust checkout to read source from.
         src_root: PathBuf,
-        /// Where to write the transformed data.
-        output_json: PathBuf,
+        /// Directory to write coverage.json into.
+        output_dir: PathBuf,
     },
     /// Build the report from data `transform` wrote earlier.
     GenerateHtml {
-        /// Output of the `transform` subcommand.
-        coverage_data: PathBuf,
-        /// Where to write the report. The other pages go beside it.
-        output_html: PathBuf,
+        /// The coverage.json that `transform` wrote.
+        input_json: PathBuf,
+        /// Directory to write the report and its supporting files into.
+        output_dir: PathBuf,
     },
 }
 
 fn main() -> Result<()> {
     match Args::parse().command {
-        Command::Run { coverage_json, src_root, output_html } => {
+        Command::Run { coverage_json, src_root, output_dir } => {
             let data = read_and_transform(&coverage_json, &src_root)?;
-            generate_html(&data, &output_html)?;
+            generate_html(&data, &output_dir)?;
         }
-        Command::Transform { coverage_json, src_root, output_json } => {
+        Command::Transform { coverage_json, src_root, output_dir } => {
+            std::fs::create_dir_all(&output_dir)
+                .with_context(|| format!("failed to create {}", output_dir.display()))?;
             let data = read_and_transform(&coverage_json, &src_root)?;
             let json = serde_json::to_string(&data).context("failed to serialize coverage data")?;
+            let output_json = output_dir.join("coverage.json");
             write_atomically(&output_json, &json)?;
             println!("written to {}", output_json.display());
         }
-        Command::GenerateHtml { coverage_data, output_html } => {
-            let text = std::fs::read_to_string(&coverage_data)
-                .with_context(|| format!("failed to read {}", coverage_data.display()))?;
+        Command::GenerateHtml { input_json, output_dir } => {
+            let text = std::fs::read_to_string(&input_json)
+                .with_context(|| format!("failed to read {}", input_json.display()))?;
             let data: CoverageData =
                 serde_json::from_str(&text).context("failed to parse coverage data")?;
-            generate_html(&data, &output_html)?;
+            generate_html(&data, &output_dir)?;
         }
     }
 
@@ -85,8 +88,11 @@ fn read_and_transform(coverage_json: &Path, src_root: &Path) -> Result<CoverageD
     transform::process(&json_text, src_root)
 }
 
-/// Write the report pages, the source shards, and the stylesheet and scripts.
-fn generate_html(data: &CoverageData, output_html: &Path) -> Result<()> {
+// WRITE-DOC
+fn generate_html(data: &CoverageData, out_dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(out_dir)
+        .with_context(|| format!("failed to create {}", out_dir.display()))?;
+
     let fully_count = count_in(data, FunctionCategory::FullyCovered);
     let partial_count = count_in(data, FunctionCategory::PartiallyCovered);
     let uncovered_count = count_in(data, FunctionCategory::FullyUncovered);
@@ -94,18 +100,16 @@ fn generate_html(data: &CoverageData, output_html: &Path) -> Result<()> {
 
     eprintln!("fully: {fully_count}, partial: {partial_count}, uncovered: {uncovered_count}");
 
-    let base_name =
-        output_html.file_stem().and_then(|s| s.to_str()).unwrap_or("report").to_string();
-    let out_dir = output_html.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let base_name = "report";
 
     let shard_dir_name = format!("{base_name}_sources");
     let shard_dir = out_dir.join(&shard_dir_name);
     eprintln!("writing source shards to {}...", shard_dir.display());
     render::write_source_shards(&data.functions, &data.sources, &shard_dir)?;
 
-    render::write_static_assets(&out_dir)?;
+    render::write_static_assets(out_dir)?;
 
-    let paths = render::report_paths(&base_name);
+    let paths = render::report_paths(base_name);
 
     let covered_lines_total: usize = data
         .functions
