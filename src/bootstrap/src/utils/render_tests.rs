@@ -432,6 +432,9 @@ impl<'a> Renderer<'a> {
                         "failed to write test failure to file: {e} (attempted because `--record` was passed)"
                     );
                 }
+                if let Some(cb) = &self.on_test_finished {
+                    cb(&outcome.name);
+                }
                 self.failures.push(outcome);
             }
             Message::Test(TestMessage::Timeout { name }) => {

@@ -1141,7 +1141,7 @@ fn coverage_run_tests(
         };
         if new_count == 0 {
             eprintln!(
-                "coverage: test `{test_name}` passed but wrote no profraw files; \
+                "coverage: test `{test_name}` finished but wrote no profraw files; \
                  the instrumented rustc may not have run"
             );
         }
