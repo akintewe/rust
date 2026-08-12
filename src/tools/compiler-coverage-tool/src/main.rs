@@ -88,7 +88,10 @@ fn read_and_transform(coverage_json: &Path, src_root: &Path) -> Result<CoverageD
     transform::process(&json_text, src_root)
 }
 
-// WRITE-DOC
+/// Writes the report pages, plus the source code they link to split into
+/// numbered shard files. The whole compiler's source is too big to inline
+/// into the pages themselves, so each page only loads a function's source
+/// from its shard when someone actually expands it.
 fn generate_html(data: &CoverageData, out_dir: &Path) -> Result<()> {
     std::fs::create_dir_all(out_dir)
         .with_context(|| format!("failed to create {}", out_dir.display()))?;

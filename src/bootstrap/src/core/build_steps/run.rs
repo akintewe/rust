@@ -555,7 +555,9 @@ impl Step for GenerateHelp {
     }
 }
 
-// WRITE-DOC
+/// Everything `./x run compiler-coverage` reads and writes, all under
+/// `build/coverage/`. Kept in one place so both the collection step and the
+/// tool that builds the report agree on where things live.
 pub(crate) struct CoveragePaths {
     pub(crate) profraw_dir: PathBuf,
     pub(crate) profdata_path: PathBuf,

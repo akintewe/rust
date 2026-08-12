@@ -1043,10 +1043,13 @@ fn coverage_run_tests(
 
     cmd.env("LLVM_PROFILE_FILE", paths.profraw_dir.join("rustc_%m_%p.profraw").as_os_str());
 
-    // WRITE-DOC
+    // A test compiletest skips as up to date never writes coverage, which then
+    // reads as the compiler never running that code at all.
     cmd.arg("--force-rerun");
 
-    // WRITE-DOC
+    // Merging after every single test means one llvm-profdata process per
+    // test, which gets slow once there are thousands of them. Batch them up
+    // instead, and only actually merge once enough have piled up.
     const MERGE_BATCH_SIZE: usize = 100;
 
     let (finished_tx, finished_rx) = std::sync::mpsc::channel::<usize>();
@@ -1055,7 +1058,9 @@ fn coverage_run_tests(
     let merge_profdata_path = paths.profdata_path.clone();
     let merge_llvm_profdata = llvm_profdata.clone();
     let merge_thread = std::thread::spawn(move || {
-        // WRITE-DOC
+        // Every profraw this thread has already merged. Only ever grows, so
+        // a file that gets picked up in one batch never gets merged again in
+        // a later one.
         let mut merged: HashSet<PathBuf> = HashSet::new();
 
         let mut do_merge = || {
@@ -1076,7 +1081,8 @@ fn coverage_run_tests(
                 return;
             }
 
-            // WRITE-DOC
+            // Merge the new profraws into whatever's already in combined.profdata,
+            // then delete them so the same files never get counted twice.
             let mut merge = std::process::Command::new(&merge_llvm_profdata);
             merge.arg("merge").arg("--sparse").arg("-o").arg(&merge_profdata_path);
             if merge_profdata_path.exists() {
@@ -1123,7 +1129,10 @@ fn coverage_run_tests(
         merged.len()
     });
 
-    // WRITE-DOC
+    // Its own record of which profraws it has already counted, separate from
+    // the merge thread's. It only grows too, so a file that gets deleted by
+    // the merge thread later doesn't get double counted here just because it
+    // vanished from disk.
     let seen_by_callback: std::cell::RefCell<HashSet<PathBuf>> =
         std::cell::RefCell::new(HashSet::new());
     let on_test_finished = move |test_name: &str| {
@@ -2202,7 +2211,9 @@ struct Compiletest {
     run_tests_fn: TestRunnerKind,
 }
 
-// WRITE-DOC
+// An enum instead of a function pointer, because Compiletest derives Hash and
+// Eq so bootstrap can use it as a cache key, and two function pointers don't
+// tell you anything about whether they're really the same thing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum TestRunnerKind {
     Default,

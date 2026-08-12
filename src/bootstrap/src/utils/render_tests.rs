@@ -60,7 +60,8 @@ fn run_tests(
     run_tests_with_callback(builder, cmd, stream, record_failed_tests, None)
 }
 
-// WRITE-DOC
+// Called with the name of every test that finishes, whether it passed or
+// failed. Only ignored tests skip this, since they never actually ran.
 pub(crate) type OnTestFinished = Box<dyn Fn(&str)>;
 
 pub(crate) fn run_tests_with_callback(

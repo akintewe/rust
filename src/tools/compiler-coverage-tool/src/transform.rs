@@ -313,7 +313,9 @@ fn merge_monomorphizations(reports: Vec<FunctionReport>) -> Vec<FunctionReport> 
         std::collections::BTreeMap::new();
 
     for report in reports {
-        // WRITE-DOC
+        // Where a function lives never changes between monomorphizations,
+        // even though its demangled name does (it carries the concrete
+        // types). File and line is the only identity that's actually stable.
         let key = (report.filename.clone(), report.line_start);
         match groups.get_mut(&key) {
             None => {
@@ -385,7 +387,9 @@ fn merge_closures(reports: Vec<FunctionReport>) -> Vec<FunctionReport> {
         while let Some(parent) = closure_parent(root) {
             root = parent;
         }
-        // WRITE-DOC
+        // Same reasoning as merge_monomorphizations: root is the real
+        // function's name once every closure suffix is stripped off, and
+        // that's what identifies it, not the raw demangled name.
         let key = (report.filename.clone(), root.to_string());
 
         let root_owned = root.to_string();
