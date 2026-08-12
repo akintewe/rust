@@ -749,7 +749,6 @@ complete -c x.py -n "__fish_x.py_using_subcommand run" -l llvm-profile-use -d 'u
 complete -c x.py -n "__fish_x.py_using_subcommand run" -l reproducible-artifact -d 'Additional reproducible artifacts that should be added to the reproducible artifacts archive' -r
 complete -c x.py -n "__fish_x.py_using_subcommand run" -l set -d 'override options in bootstrap.toml' -r -f
 complete -c x.py -n "__fish_x.py_using_subcommand run" -l ci -d 'Make bootstrap to behave as it\'s running on the CI environment or not' -r -f -a "{true\t'',false\t''}"
-complete -c x.py -n "__fish_x.py_using_subcommand run" -l no-html-gen -d 'skip generating the HTML report when collecting compiler coverage'
 complete -c x.py -n "__fish_x.py_using_subcommand run" -s v -l verbose -d 'use verbose output (-vv for very verbose)'
 complete -c x.py -n "__fish_x.py_using_subcommand run" -s q -l quiet -d 'use quiet output'
 complete -c x.py -n "__fish_x.py_using_subcommand run" -s i -l incremental -d 'use incremental compilation'
@@ -787,7 +786,6 @@ complete -c x.py -n "__fish_x.py_using_subcommand r" -l llvm-profile-use -d 'use
 complete -c x.py -n "__fish_x.py_using_subcommand r" -l reproducible-artifact -d 'Additional reproducible artifacts that should be added to the reproducible artifacts archive' -r
 complete -c x.py -n "__fish_x.py_using_subcommand r" -l set -d 'override options in bootstrap.toml' -r -f
 complete -c x.py -n "__fish_x.py_using_subcommand r" -l ci -d 'Make bootstrap to behave as it\'s running on the CI environment or not' -r -f -a "{true\t'',false\t''}"
-complete -c x.py -n "__fish_x.py_using_subcommand r" -l no-html-gen -d 'skip generating the HTML report when collecting compiler coverage'
 complete -c x.py -n "__fish_x.py_using_subcommand r" -s v -l verbose -d 'use verbose output (-vv for very verbose)'
 complete -c x.py -n "__fish_x.py_using_subcommand r" -s q -l quiet -d 'use quiet output'
 complete -c x.py -n "__fish_x.py_using_subcommand r" -s i -l incremental -d 'use incremental compilation'
