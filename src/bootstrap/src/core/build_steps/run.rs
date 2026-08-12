@@ -682,7 +682,7 @@ impl Step for CompilerCoverage {
             }
         }
 
-        if builder.config.args().iter().any(|a| *a == "--no-html-gen") {
+        if builder.config.args().contains(&"--no-html-gen") {
             return;
         }
 
