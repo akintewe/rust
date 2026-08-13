@@ -606,21 +606,28 @@ impl Step for CompilerCoverage {
         let compiler = self.compiler;
         let target = self.target;
 
-        // Left over .profraw files would otherwise be merged in as though this
-        // run had produced them.
         let paths = CoveragePaths::new(builder);
-        if paths.profraw_dir.exists() {
-            t!(std::fs::remove_dir_all(&paths.profraw_dir));
+        if !builder.config.dry_run() {
+            // Left over files would otherwise be merged in, or mistaken for
+            // real output, as though this run had produced them.
+            if paths.profraw_dir.exists() {
+                t!(std::fs::remove_dir_all(&paths.profraw_dir));
+            }
+            t!(std::fs::create_dir_all(&paths.profraw_dir));
+            if paths.profdata_path.exists() {
+                t!(std::fs::remove_file(&paths.profdata_path));
+            }
         }
-        t!(std::fs::create_dir_all(&paths.profraw_dir));
 
         test::collect_coverage_suites(builder, compiler, target);
 
         // Individual suites can legitimately merge nothing (e.g. `crashes`,
         // where every test is expected to fail, so none of them ever reach
         // the point of writing coverage). Only the whole run producing
-        // nothing at all means instrumentation itself never worked.
-        if !paths.profdata_path.exists() {
+        // nothing at all means instrumentation itself never worked. Skip
+        // this during the dry-run validation pass, since nothing real has
+        // happened yet at that point either way.
+        if !builder.config.dry_run() && !paths.profdata_path.exists() {
             eprintln!(
                 "coverage: no profraw files were produced across the whole run; \
                  the instrumented rustc likely never ran"
